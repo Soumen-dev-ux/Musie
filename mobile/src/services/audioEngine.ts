@@ -101,15 +101,31 @@ class AudioEngine {
       if (token !== this.loadToken) return;
 
       if (backendErr instanceof ApiError && backendErr.status === 404) {
-        const probe = await apiClient.probeDirectStream(track.youtubeId);
-        if (token !== this.loadToken) return;
-        if (probe.ok) {
-          streamUrl = apiClient.getStreamUrl(track.youtubeId);
-        } else {
-          const deviceResolved = await resolveYoutubeOnDevice(track.youtubeId);
+        try {
+          const probe = await apiClient.probeDirectStream(track.youtubeId);
           if (token !== this.loadToken) return;
-          streamUrl = deviceResolved.url;
-          streamHeaders = deviceResolved.headers;
+          if (probe.ok) {
+            streamUrl = apiClient.getStreamUrl(track.youtubeId);
+          } else {
+            const deviceResolved = await resolveYoutubeOnDevice(track.youtubeId);
+            if (token !== this.loadToken) return;
+            streamUrl = deviceResolved.url;
+            streamHeaders = deviceResolved.headers;
+          }
+        } catch (fallbackErr) {
+          if (token !== this.loadToken) return;
+          try {
+            const deviceResolved = await resolveYoutubeOnDevice(track.youtubeId);
+            if (token !== this.loadToken) return;
+            streamUrl = deviceResolved.url;
+            streamHeaders = deviceResolved.headers;
+          } catch (deviceErr) {
+            const probeMsg =
+              fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+            const deviceMsg =
+              deviceErr instanceof Error ? deviceErr.message : String(deviceErr);
+            throw new Error(`${probeMsg}\n${deviceMsg}`);
+          }
         }
       } else {
         try {

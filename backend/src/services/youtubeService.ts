@@ -25,12 +25,11 @@ export interface CachedStream {
 const DEFAULT_WEB_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const IOS_CLIENT_UA =
-  'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)';
+  'com.google.ios.youtube/20.11.6 (iPhone10,4; U; CPU iOS 16_7_7 like Mac OS X)';
 const ANDROID_CLIENT_UA =
-  'com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip';
+  'com.google.android.youtube/19.35.36(Linux; U; Android 13; en_US; SM-S908E Build/TP1A.220624.014) gzip';
 
-type GetVideoInfoOptions = NonNullable<Parameters<Innertube['getBasicInfo']>[1]>;
-type InnertubeClientName = NonNullable<GetVideoInfoOptions['client']>;
+type InnertubeClientName = NonNullable<Parameters<Innertube['getBasicInfo']>[1]>;
 
 const INNERTUBE_CLIENTS: Array<{
   client: InnertubeClientName;
@@ -39,6 +38,7 @@ const INNERTUBE_CLIENTS: Array<{
   { client: 'IOS', userAgent: IOS_CLIENT_UA },
   { client: 'ANDROID', userAgent: ANDROID_CLIENT_UA },
   { client: 'TV_EMBEDDED', userAgent: DEFAULT_WEB_UA },
+  { client: 'TV', userAgent: 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version' },
   { client: 'MWEB', userAgent: DEFAULT_WEB_UA },
   { client: 'WEB', userAgent: DEFAULT_WEB_UA },
 ];
@@ -408,7 +408,7 @@ class YouTubeService {
       const probe = await axios.get(stream.url, {
         headers,
         responseType: 'arraybuffer',
-        timeout: 6500,
+        timeout: 4000,
         validateStatus: (s) => s >= 200 && s < 400,
       });
       if (!stream.contentLength) {
@@ -524,7 +524,7 @@ class YouTubeService {
     args.push(target);
 
     const { stdout } = await execFileAsync(env.ytDlpPath, args, {
-      timeout: 22000,
+      timeout: 14000,
       maxBuffer: 1024 * 1024 * 4,
     });
 
@@ -565,7 +565,7 @@ class YouTubeService {
 
     for (const profile of INNERTUBE_CLIENTS) {
       try {
-        const info = await innertube.getBasicInfo(videoId, { client: profile.client });
+        const info = await innertube.getBasicInfo(videoId, profile.client);
         const status = info.playability_status?.status;
         if (status && status !== 'OK' && !info.streaming_data) {
           lastError = `${profile.client}: ${info.playability_status?.reason || status}`;
@@ -626,53 +626,59 @@ class YouTubeService {
   }
 
   private async resolveWithPiped(videoId: string): Promise<CachedStream> {
-    let lastError = 'No Piped instances available';
-
-    for (const instance of env.pipedInstances) {
-      try {
-        const res = await axios.get<{
-          audioStreams?: Array<{
-            url?: string;
-            mimeType?: string;
-            format?: string;
-            bitrate?: number;
-            contentLength?: number;
-          }>;
-        }>(`${instance}/streams/${encodeURIComponent(videoId)}`, {
-          timeout: 6000,
-        });
-
-        const streams = res.data?.audioStreams || [];
-        // Prefer M4A / audio/mp4 for universal iOS AVPlayer + Android ExoPlayer compatibility
-        const sorted = [...streams].sort((a, b) => {
-          const aMp4 = (a.mimeType || '').includes('mp4') ? 1 : 0;
-          const bMp4 = (b.mimeType || '').includes('mp4') ? 1 : 0;
-          if (aMp4 !== bMp4) return bMp4 - aMp4;
-          return (b.bitrate || 0) - (a.bitrate || 0);
-        });
-
-        for (const stream of sorted) {
-          if (!stream.url) continue;
-          const candidate: CachedStream = {
-            url: stream.url,
-            mimeType: stream.mimeType?.split(';')[0] || 'audio/mp4',
-            contentLength: stream.contentLength,
-            headers: { 'User-Agent': DEFAULT_WEB_UA },
-            resolver: `piped:${new URL(instance).hostname}`,
-            preferDirect: true,
-            expiresAt: Date.now() + 1000 * 60 * 20,
-          };
-          if (await this.verifyStreamReadable(candidate)) {
-            return candidate;
-          }
-        }
-        lastError = `${instance}: no readable audioStreams`;
-      } catch (err) {
-        lastError = `${instance}: ${err instanceof Error ? err.message : String(err)}`;
-      }
+    if (env.pipedInstances.length === 0) {
+      throw new Error('No Piped instances available');
     }
 
-    throw new Error(lastError);
+    const attempts = env.pipedInstances.map(async (instance) => {
+      const res = await axios.get<{
+        audioStreams?: Array<{
+          url?: string;
+          mimeType?: string;
+          format?: string;
+          bitrate?: number;
+          contentLength?: number;
+        }>;
+      }>(`${instance}/streams/${encodeURIComponent(videoId)}`, {
+        timeout: 4500,
+      });
+
+      const streams = res.data?.audioStreams || [];
+      // Prefer M4A / audio/mp4 for universal iOS AVPlayer + Android ExoPlayer compatibility
+      const sorted = [...streams].sort((a, b) => {
+        const aMp4 = (a.mimeType || '').includes('mp4') ? 1 : 0;
+        const bMp4 = (b.mimeType || '').includes('mp4') ? 1 : 0;
+        if (aMp4 !== bMp4) return bMp4 - aMp4;
+        return (b.bitrate || 0) - (a.bitrate || 0);
+      });
+
+      for (const stream of sorted) {
+        if (!stream.url) continue;
+        const candidate: CachedStream = {
+          url: stream.url,
+          mimeType: stream.mimeType?.split(';')[0] || 'audio/mp4',
+          contentLength: stream.contentLength,
+          headers: { 'User-Agent': DEFAULT_WEB_UA },
+          resolver: `piped:${new URL(instance).hostname}`,
+          preferDirect: true,
+          expiresAt: Date.now() + 1000 * 60 * 20,
+        };
+        if (await this.verifyStreamReadable(candidate)) {
+          return candidate;
+        }
+      }
+      throw new Error(`${instance}: no readable audioStreams`);
+    });
+
+    try {
+      return await Promise.any(attempts);
+    } catch (aggErr) {
+      const messages =
+        aggErr instanceof AggregateError
+          ? aggErr.errors.map((e) => (e instanceof Error ? e.message : String(e)))
+          : [String(aggErr)];
+      throw new Error(messages.join('; '));
+    }
   }
 
   private invidiousCache: { instances: string[]; expiresAt: number } | null = null;
@@ -707,59 +713,65 @@ class YouTubeService {
   }
 
   private async resolveWithInvidious(videoId: string): Promise<CachedStream> {
-    const instances = await this.getInvidiousInstances();
-    let lastError = 'No Invidious instances available';
-
-    for (const instance of instances) {
-      try {
-        const res = await axios.get<{
-          adaptiveFormats?: Array<{
-            url?: string;
-            type?: string;
-            bitrate?: string | number;
-            clen?: string | number;
-          }>;
-        }>(`${instance}/api/v1/videos/${encodeURIComponent(videoId)}`, {
-          params: { fields: 'adaptiveFormats', local: true },
-          timeout: 6500,
-        });
-
-        const formats = (res.data?.adaptiveFormats || []).filter(
-          (f) => Boolean(f.url) && (f.type || '').startsWith('audio/'),
-        );
-
-        const sorted = [...formats].sort((a, b) => {
-          const aMp4 = (a.type || '').includes('audio/mp4') ? 1 : 0;
-          const bMp4 = (b.type || '').includes('audio/mp4') ? 1 : 0;
-          if (aMp4 !== bMp4) return bMp4 - aMp4;
-          return Number(b.bitrate || 0) - Number(a.bitrate || 0);
-        });
-
-        for (const fmt of sorted) {
-          if (!fmt.url) continue;
-          const absoluteUrl = fmt.url.startsWith('http')
-            ? fmt.url
-            : `${instance}${fmt.url.startsWith('/') ? '' : '/'}${fmt.url}`;
-          const candidate: CachedStream = {
-            url: absoluteUrl,
-            mimeType: fmt.type?.split(';')[0] || 'audio/mp4',
-            contentLength: fmt.clen ? Number(fmt.clen) : undefined,
-            headers: { 'User-Agent': DEFAULT_WEB_UA },
-            resolver: `invidious:${new URL(instance).hostname}`,
-            preferDirect: true,
-            expiresAt: Date.now() + 1000 * 60 * 20,
-          };
-          if (await this.verifyStreamReadable(candidate)) {
-            return candidate;
-          }
-        }
-        lastError = `${instance}: no readable audio formats`;
-      } catch (err) {
-        lastError = `${instance}: ${err instanceof Error ? err.message : String(err)}`;
-      }
+    const instances = (await this.getInvidiousInstances()).slice(0, 4);
+    if (instances.length === 0) {
+      throw new Error('No Invidious instances available');
     }
 
-    throw new Error(lastError);
+    const attempts = instances.map(async (instance) => {
+      const res = await axios.get<{
+        adaptiveFormats?: Array<{
+          url?: string;
+          type?: string;
+          bitrate?: string | number;
+          clen?: string | number;
+        }>;
+      }>(`${instance}/api/v1/videos/${encodeURIComponent(videoId)}`, {
+        params: { fields: 'adaptiveFormats', local: true },
+        timeout: 4500,
+      });
+
+      const formats = (res.data?.adaptiveFormats || []).filter(
+        (f) => Boolean(f.url) && (f.type || '').startsWith('audio/'),
+      );
+
+      const sorted = [...formats].sort((a, b) => {
+        const aMp4 = (a.type || '').includes('audio/mp4') ? 1 : 0;
+        const bMp4 = (b.type || '').includes('audio/mp4') ? 1 : 0;
+        if (aMp4 !== bMp4) return bMp4 - aMp4;
+        return Number(b.bitrate || 0) - Number(a.bitrate || 0);
+      });
+
+      for (const fmt of sorted) {
+        if (!fmt.url) continue;
+        const absoluteUrl = fmt.url.startsWith('http')
+          ? fmt.url
+          : `${instance}${fmt.url.startsWith('/') ? '' : '/'}${fmt.url}`;
+        const candidate: CachedStream = {
+          url: absoluteUrl,
+          mimeType: fmt.type?.split(';')[0] || 'audio/mp4',
+          contentLength: fmt.clen ? Number(fmt.clen) : undefined,
+          headers: { 'User-Agent': DEFAULT_WEB_UA },
+          resolver: `invidious:${new URL(instance).hostname}`,
+          preferDirect: true,
+          expiresAt: Date.now() + 1000 * 60 * 20,
+        };
+        if (await this.verifyStreamReadable(candidate)) {
+          return candidate;
+        }
+      }
+      throw new Error(`${instance}: no readable audio formats`);
+    });
+
+    try {
+      return await Promise.any(attempts);
+    } catch (aggErr) {
+      const messages =
+        aggErr instanceof AggregateError
+          ? aggErr.errors.map((e) => (e instanceof Error ? e.message : String(e)))
+          : [String(aggErr)];
+      throw new Error(messages.join('; '));
+    }
   }
 }
 

@@ -160,10 +160,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           error: 'Stream timed out while buffering. Check Backend Stream Test in Settings.',
         });
       }
-    }, 30000);
+    }, 55000);
 
     try {
       await audioEngine.loadAndPlay(track);
+      if (get().currentTrack?.youtubeId !== track.youtubeId) {
+        return;
+      }
+
+      // Tighten watchdog once stream URL is resolved and native player starts buffering
+      clearWatchdog();
+      bufferingWatchdog = setTimeout(() => {
+        const state = get();
+        if (state.currentTrack?.youtubeId === track.youtubeId && state.isBuffering && !state.isPlaying) {
+          set({
+            isBuffering: false,
+            error: 'Stream timed out while buffering. Tap retry to reload.',
+          });
+        }
+      }, 22000);
       useLibraryStore.getState().recordRecent(track);
 
       // Load SponsorBlock segments in background

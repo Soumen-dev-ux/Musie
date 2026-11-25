@@ -4,13 +4,85 @@ import { filterExternalUrl } from './adguardClient';
 
 interface InnerTubeClientProfile {
   name: string;
+  endpoint: string;
+  clientId: string;
+  clientVersion: string;
   userAgent: string;
+  extraHeaders?: Record<string, string>;
   client: Record<string, string | number>;
+  thirdParty?: { embedUrl: string };
 }
 
 const CLIENT_PROFILES: InnerTubeClientProfile[] = [
   {
+    name: 'IOS',
+    endpoint: 'https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false',
+    clientId: '5',
+    clientVersion: '20.11.6',
+    userAgent: 'com.google.ios.youtube/20.11.6 (iPhone10,4; U; CPU iOS 16_7_7 like Mac OS X)',
+    client: {
+      clientName: 'iOS',
+      clientVersion: '20.11.6',
+      deviceMake: 'Apple',
+      deviceModel: 'iPhone10,4',
+      osName: 'iOS',
+      osVersion: '16.7.7.20H330',
+      platform: 'MOBILE',
+      hl: 'en',
+      gl: 'US',
+    },
+  },
+  {
+    name: 'ANDROID',
+    endpoint: 'https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false',
+    clientId: '3',
+    clientVersion: '19.35.36',
+    userAgent:
+      'com.google.android.youtube/19.35.36(Linux; U; Android 13; en_US; SM-S908E Build/TP1A.220624.014) gzip',
+    extraHeaders: {
+      'X-GOOG-API-FORMAT-VERSION': '2',
+    },
+    client: {
+      clientName: 'ANDROID',
+      clientVersion: '19.35.36',
+      deviceMake: 'Samsung',
+      deviceModel: 'SM-S908E',
+      osName: 'Android',
+      osVersion: '13',
+      androidSdkVersion: 33,
+      platform: 'MOBILE',
+      clientFormFactor: 'SMALL_FORM_FACTOR',
+      hl: 'en',
+      gl: 'US',
+    },
+  },
+  {
+    name: 'TV_EMBEDDED',
+    endpoint: 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
+    clientId: '85',
+    clientVersion: '2.0',
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    extraHeaders: {
+      Origin: 'https://www.youtube.com',
+      Referer: 'https://www.youtube.com/',
+    },
+    client: {
+      clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+      clientVersion: '2.0',
+      clientScreen: 'EMBED',
+      hl: 'en',
+      gl: 'US',
+    },
+    thirdParty: {
+      embedUrl: 'https://www.youtube.com/',
+    },
+  },
+  {
     name: 'ANDROID_VR',
+    endpoint: 'https://youtubei.googleapis.com/youtubei/v1/player?prettyPrint=false',
+    clientId: '28',
+    clientVersion: '1.60.19',
     userAgent:
       'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
     client: {
@@ -21,40 +93,47 @@ const CLIENT_PROFILES: InnerTubeClientProfile[] = [
       osName: 'Android',
       osVersion: '12L',
       androidSdkVersion: 32,
-      hl: 'en',
-      gl: 'US',
-    },
-  },
-  {
-    name: 'IOS',
-    userAgent:
-      'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)',
-    client: {
-      clientName: 'IOS',
-      clientVersion: '19.45.4',
-      deviceMake: 'Apple',
-      deviceModel: 'iPhone16,2',
-      osName: 'iPhone',
-      osVersion: '18.1.0.22B83',
-      hl: 'en',
-      gl: 'US',
-    },
-  },
-  {
-    name: 'ANDROID',
-    userAgent:
-      'com.google.android.youtube/19.44.38 (Linux; U; Android 14) gzip',
-    client: {
-      clientName: 'ANDROID',
-      clientVersion: '19.44.38',
-      osName: 'Android',
-      osVersion: '14',
-      androidSdkVersion: 34,
+      platform: 'MOBILE',
       hl: 'en',
       gl: 'US',
     },
   },
 ];
+
+let cachedVisitorData: { value: string; expiresAt: number } | null = null;
+
+async function getVisitorData(): Promise<string> {
+  if (cachedVisitorData && cachedVisitorData.expiresAt > Date.now()) {
+    return cachedVisitorData.value;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4500);
+  try {
+    const res = await fetch('https://www.youtube.com/sw.js_data', {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      },
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    const cleaned = text.replace(/^\)\]\}'\s*/, '');
+    const match = cleaned.match(/"(Cg[a-zA-Z0-9_%-]{10,})"/);
+    if (match?.[1]) {
+      cachedVisitorData = {
+        value: match[1],
+        expiresAt: Date.now() + 1000 * 60 * 30,
+      };
+      return match[1];
+    }
+  } catch {
+    // ignore and proceed without visitorData
+  } finally {
+    clearTimeout(timer);
+  }
+  return '';
+}
 
 interface AdaptiveFormat {
   itag?: number;
@@ -112,23 +191,38 @@ export async function resolveYoutubeOnDevice(videoId: string): Promise<DeviceRes
   }
 
   const { config, rules } = useAdGuardStore.getState();
+  const visitorData = await getVisitorData();
   const errors: string[] = [];
 
   for (const profile of CLIENT_PROFILES) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
+    const timer = setTimeout(() => controller.abort(), 8000);
 
     try {
-      const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+      const headers: Record<string, string> = {
+        Accept: '*/*',
+        'Content-Type': 'application/json',
+        'User-Agent': profile.userAgent,
+        'X-Youtube-Client-Name': profile.clientId,
+        'X-Youtube-Client-Version': profile.clientVersion,
+        ...(profile.extraHeaders || {}),
+      };
+      if (visitorData) {
+        headers['X-Goog-Visitor-Id'] = visitorData;
+      }
+
+      const clientContext: Record<string, string | number> = {
+        ...profile.client,
+        ...(visitorData ? { visitorData } : {}),
+      };
+
+      const res = await fetch(profile.endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': profile.userAgent,
-          Origin: 'https://www.youtube.com',
-        },
+        headers,
         body: JSON.stringify({
           context: {
-            client: profile.client,
+            client: clientContext,
+            ...(profile.thirdParty ? { thirdParty: profile.thirdParty } : {}),
           },
           videoId,
           contentCheckOk: true,

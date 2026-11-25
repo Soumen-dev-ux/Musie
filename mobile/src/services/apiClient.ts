@@ -67,7 +67,10 @@ async function request<T>(
     }
     return data as T;
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
+    if (
+      controller.signal.aborted ||
+      (err instanceof Error && (err.name === 'AbortError' || /canceled|aborted/i.test(err.message)))
+    ) {
       throw new Error('Request timed out. If Render was asleep, wait a few seconds and retry.');
     }
     throw err;
@@ -92,13 +95,13 @@ export const apiClient = {
   },
 
   resolveStream(youtubeId: string): Promise<ResolvedStreamInfo> {
-    return request(`/api/stream/${encodeURIComponent(youtubeId)}/resolve`, {}, 45000);
+    return request(`/api/stream/${encodeURIComponent(youtubeId)}/resolve`, {}, 22000);
   },
 
   async probeDirectStream(youtubeId: string): Promise<{ ok: boolean; status: number; detail?: string }> {
     const url = this.getStreamUrl(youtubeId);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
+    const timer = setTimeout(() => controller.abort(), 20000);
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -114,6 +117,18 @@ export const apiClient = {
         status: res.status,
         detail: data?.error || data?.message || `HTTP ${res.status}`,
       };
+    } catch (err) {
+      if (
+        controller.signal.aborted ||
+        (err instanceof Error && (err.name === 'AbortError' || /canceled|aborted/i.test(err.message)))
+      ) {
+        return {
+          ok: false,
+          status: 408,
+          detail: 'Backend stream probe timed out.',
+        };
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }
