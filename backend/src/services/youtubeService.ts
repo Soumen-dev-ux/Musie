@@ -29,7 +29,8 @@ const IOS_CLIENT_UA =
 const ANDROID_CLIENT_UA =
   'com.google.android.youtube/19.29.37 (Linux; U; Android 11) gzip';
 
-type InnertubeClientName = NonNullable<Parameters<Innertube['getBasicInfo']>[1]>;
+type GetVideoInfoOptions = NonNullable<Parameters<Innertube['getBasicInfo']>[1]>;
+type InnertubeClientName = NonNullable<GetVideoInfoOptions['client']>;
 
 const INNERTUBE_CLIENTS: Array<{
   client: InnertubeClientName;
@@ -544,7 +545,7 @@ class YouTubeService {
 
     for (const profile of INNERTUBE_CLIENTS) {
       try {
-        const info = await innertube.getBasicInfo(videoId, profile.client);
+        const info = await innertube.getBasicInfo(videoId, { client: profile.client });
         const status = info.playability_status?.status;
         if (status && status !== 'OK' && !info.streaming_data) {
           lastError = `${profile.client}: ${info.playability_status?.reason || status}`;
