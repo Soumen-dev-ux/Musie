@@ -3,6 +3,7 @@ import { AudioPlayer, AudioStatus, createAudioPlayer, setAudioModeAsync } from '
 import { Platform } from 'react-native';
 import { SponsorSegment, Track } from '../types';
 import { ApiError, apiClient } from './apiClient';
+import { resolveYoutubeOnDevice } from './youtubeClientResolver';
 
 // Expo Go on Android does not bundle the app's AudioControlsService manifest entry
 const isExpoGoAndroid = Platform.OS === 'android' && Constants.appOwnership === 'expo';
@@ -87,34 +88,56 @@ class AudioEngine {
     // Dispose any existing player before resolving the next stream so stale audio stops immediately
     this.dispose();
 
-    // Preflight resolve on backend so extraction/bot-check errors surface immediately
-    // instead of leaving ExoPlayer/AVPlayer hanging in an infinite buffering state.
+    // Preflight resolve on backend; if Render hits a YouTube datacenter bot-block (502)
+    // or is unreachable, fall back to resolving directly from the phone's IP.
     let streamUrl = apiClient.getStreamUrl(track.youtubeId);
+    let streamHeaders: Record<string, string> | undefined;
+
     try {
       const resolved = await apiClient.resolveStream(track.youtubeId);
       if (token !== this.loadToken) return;
       streamUrl = resolved.directUrl || apiClient.getStreamUrl(track.youtubeId);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        // Fallback if backend on Render is running an older build without /resolve
+    } catch (backendErr) {
+      if (token !== this.loadToken) return;
+
+      if (backendErr instanceof ApiError && backendErr.status === 404) {
         const probe = await apiClient.probeDirectStream(track.youtubeId);
         if (token !== this.loadToken) return;
-        if (!probe.ok) {
-          throw new Error(
-            probe.status === 404
-              ? 'Backend stream route not found (404). Check your Backend URL in Settings.'
-              : `Stream failed (${probe.status}): ${probe.detail || 'Redeploy latest backend to Render.'}`,
-          );
+        if (probe.ok) {
+          streamUrl = apiClient.getStreamUrl(track.youtubeId);
+        } else {
+          const deviceResolved = await resolveYoutubeOnDevice(track.youtubeId);
+          if (token !== this.loadToken) return;
+          streamUrl = deviceResolved.url;
+          streamHeaders = deviceResolved.headers;
         }
       } else {
-        throw err;
+        try {
+          const deviceResolved = await resolveYoutubeOnDevice(track.youtubeId);
+          if (token !== this.loadToken) return;
+          streamUrl = deviceResolved.url;
+          streamHeaders = deviceResolved.headers;
+        } catch (deviceErr) {
+          const backendMsg =
+            backendErr instanceof Error ? backendErr.message : String(backendErr);
+          const deviceMsg =
+            deviceErr instanceof Error ? deviceErr.message : String(deviceErr);
+          throw new Error(`${backendMsg}\n${deviceMsg}`);
+        }
       }
     }
 
     // Abort if user already tapped another song while resolving
     if (token !== this.loadToken) return;
 
-    this.player = createAudioPlayer({ uri: streamUrl }, { updateInterval: 400 });
+    this.player = createAudioPlayer(
+      {
+        uri: streamUrl,
+        headers: streamHeaders,
+        name: track.title,
+      },
+      { updateInterval: 400 },
+    );
     this.attachListener(this.player);
     this.player.play();
 

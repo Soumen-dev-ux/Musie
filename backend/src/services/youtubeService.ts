@@ -477,6 +477,14 @@ class YouTubeService {
       errors.push(`piped: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // Tier 4: Dynamic Invidious public instances fallback
+    try {
+      const candidate = await this.resolveWithInvidious(videoId);
+      return this.finalizeStream(videoId, candidate);
+    } catch (err) {
+      errors.push(`invidious: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     throw new Error(
       `Unable to extract playable YouTube stream (${errors.join(' | ')}). ` +
         'If hosted on Render, deploy with Docker (yt-dlp) or set YT_COOKIES_CONTENT in Render Environment.',
@@ -659,6 +667,93 @@ class YouTubeService {
           }
         }
         lastError = `${instance}: no readable audioStreams`;
+      } catch (err) {
+        lastError = `${instance}: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    throw new Error(lastError);
+  }
+
+  private invidiousCache: { instances: string[]; expiresAt: number } | null = null;
+
+  private async getInvidiousInstances(): Promise<string[]> {
+    if (this.invidiousCache && this.invidiousCache.expiresAt > Date.now()) {
+      return this.invidiousCache.instances;
+    }
+
+    const fallback = ['https://inv.nadeko.net', 'https://invidious.nerdvpn.de', 'https://yewtu.be'];
+    try {
+      const res = await axios.get<
+        Array<[string, { type?: string; api?: boolean; uri?: string }]>
+      >('https://api.invidious.io/instances.json?sort_by=type,api,users', {
+        timeout: 5000,
+      });
+
+      const discovered = (res.data || [])
+        .filter(([, meta]) => meta?.type === 'https' && meta?.api === true && meta?.uri)
+        .map(([, meta]) => meta.uri!.replace(/\/+$/, ''))
+        .slice(0, 6);
+
+      const instances = discovered.length > 0 ? discovered : fallback;
+      this.invidiousCache = {
+        instances,
+        expiresAt: Date.now() + 1000 * 60 * 30,
+      };
+      return instances;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private async resolveWithInvidious(videoId: string): Promise<CachedStream> {
+    const instances = await this.getInvidiousInstances();
+    let lastError = 'No Invidious instances available';
+
+    for (const instance of instances) {
+      try {
+        const res = await axios.get<{
+          adaptiveFormats?: Array<{
+            url?: string;
+            type?: string;
+            bitrate?: string | number;
+            clen?: string | number;
+          }>;
+        }>(`${instance}/api/v1/videos/${encodeURIComponent(videoId)}`, {
+          params: { fields: 'adaptiveFormats', local: true },
+          timeout: 6500,
+        });
+
+        const formats = (res.data?.adaptiveFormats || []).filter(
+          (f) => Boolean(f.url) && (f.type || '').startsWith('audio/'),
+        );
+
+        const sorted = [...formats].sort((a, b) => {
+          const aMp4 = (a.type || '').includes('audio/mp4') ? 1 : 0;
+          const bMp4 = (b.type || '').includes('audio/mp4') ? 1 : 0;
+          if (aMp4 !== bMp4) return bMp4 - aMp4;
+          return Number(b.bitrate || 0) - Number(a.bitrate || 0);
+        });
+
+        for (const fmt of sorted) {
+          if (!fmt.url) continue;
+          const absoluteUrl = fmt.url.startsWith('http')
+            ? fmt.url
+            : `${instance}${fmt.url.startsWith('/') ? '' : '/'}${fmt.url}`;
+          const candidate: CachedStream = {
+            url: absoluteUrl,
+            mimeType: fmt.type?.split(';')[0] || 'audio/mp4',
+            contentLength: fmt.clen ? Number(fmt.clen) : undefined,
+            headers: { 'User-Agent': DEFAULT_WEB_UA },
+            resolver: `invidious:${new URL(instance).hostname}`,
+            preferDirect: true,
+            expiresAt: Date.now() + 1000 * 60 * 20,
+          };
+          if (await this.verifyStreamReadable(candidate)) {
+            return candidate;
+          }
+        }
+        lastError = `${instance}: no readable audio formats`;
       } catch (err) {
         lastError = `${instance}: ${err instanceof Error ? err.message : String(err)}`;
       }

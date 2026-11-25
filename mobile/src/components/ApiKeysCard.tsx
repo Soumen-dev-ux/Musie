@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { ApiError, apiClient } from '../services/apiClient';
+import { resolveYoutubeOnDevice } from '../services/youtubeClientResolver';
 import { useSettingsStore } from '../store/settingsStore';
 import { colors } from '../theme/colors';
 
@@ -81,30 +82,20 @@ export function ApiKeysCard() {
       const res = await apiClient.resolveStream('dQw4w9WgXcQ');
       setStatusMessage({
         ok: true,
-        text: `Audio stream OK via ${res.resolver} (${res.mimeType})`,
+        text: `Audio stream OK via backend (${res.resolver}, ${res.mimeType})`,
       });
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        try {
-          const probe = await apiClient.probeDirectStream('dQw4w9WgXcQ');
-          setStatusMessage({
-            ok: probe.ok,
-            text: probe.ok
-              ? 'Direct stream OK (older backend build detected — push & redeploy Render for /resolve + Piped fallback).'
-              : probe.status === 404
-                ? '404 on /api/stream. Verify your Backend URL (no /api suffix) and redeploy Render.'
-                : `Backend needs redeploy (/resolve 404), and /api/stream returned ${probe.status}: ${probe.detail || ''}`,
-          });
-        } catch (probeErr) {
-          setStatusMessage({
-            ok: false,
-            text: probeErr instanceof Error ? probeErr.message : 'Stream test failed',
-          });
-        }
-      } else {
+      try {
+        const deviceRes = await resolveYoutubeOnDevice('dQw4w9WgXcQ');
+        const backendNote = err instanceof ApiError ? `Backend returned ${err.status}` : 'Backend blocked';
+        setStatusMessage({
+          ok: true,
+          text: `${backendNote}, but phone-side fallback works (${deviceRes.resolver}, ${deviceRes.mimeType})! Playback will work.`,
+        });
+      } catch (deviceErr) {
         setStatusMessage({
           ok: false,
-          text: err instanceof Error ? err.message : 'Audio stream resolution failed',
+          text: `${err instanceof Error ? err.message : 'Backend stream failed'}\n${deviceErr instanceof Error ? deviceErr.message : ''}`,
         });
       }
     } finally {
