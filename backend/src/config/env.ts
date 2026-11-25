@@ -12,5 +12,7 @@ export const env = {
   ytDlpPath: process.env.YT_DLP_PATH || 'yt-dlp',
   adguardEnabled: process.env.ADGUARD_ENABLED !== 'false',
   sponsorBlockEnabled: process.env.SPONSORBLOCK_ENABLED !== 'false',
-  dataDir: path.resolve(process.cwd(), 'data'),
+  dataDir: process.env.DATA_DIR
+    ? path.resolve(process.env.DATA_DIR)
+    : path.resolve(process.cwd(), 'data'),
 };

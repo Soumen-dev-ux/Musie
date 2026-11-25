@@ -11,6 +11,8 @@ import youtubeRoutes from './routes/youtube.js';
 
 const app = express();
 
+app.set('trust proxy', 1);
+
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -19,6 +21,14 @@ app.use(
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan('dev'));
+
+app.get('/', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'musie-backend',
+    health: '/health',
+  });
+});
 
 app.get('/health', (_req, res) => {
   res.json({

@@ -1,3 +1,19 @@
-.vscode
-backend/node_modules
-mobile/node_modules
+# Dependencies
+node_modules/
+
+# Build outputs
+backend/dist/
+mobile/dist/
+mobile/.expo/
+mobile/android/
+mobile/ios/
+
+# Environment & local state
+.env
+*.env.local
+backend/data/*.json
+
+# Logs & OS files
+*.log
+.DS_Store
+Thumbs.db

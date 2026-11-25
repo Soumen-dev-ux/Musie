@@ -90,6 +90,32 @@ The backend runs on `http://0.0.0.0:4000` by default.
 
 ---
 
+### Deploy Backend to Render
+
+The repository includes [render.yaml](render.yaml) and [backend/Dockerfile](backend/Dockerfile) (which bundles Node 22 + `yt-dlp` + `ffmpeg`).
+
+#### Option A: One-Click Blueprint Deploy (Recommended — includes `yt-dlp`)
+1. Push the `Musie/` folder to a GitHub repository.
+2. In the [Render Dashboard](https://dashboard.render.com), click **New + → Blueprint** and select your repository.
+3. Render reads `render.yaml` (`runtime: docker`, `rootDir: backend`, `healthCheckPath: /health`) and builds `musie-backend`.
+4. Optionally add `YOUTUBE_API_KEY`, `SPOTIFY_CLIENT_ID`, and `SPOTIFY_CLIENT_SECRET` in Render's **Environment** tab (or leave them blank and enter them directly inside the mobile app's **Settings → API Keys Vault**).
+
+#### Option B: Manual Native Node Web Service
+If you create a **Web Service** manually without Docker:
+- **Root Directory:** `backend`
+- **Build Command:** `npm install && npm run build`
+- **Start Command:** `npm start`
+- **Health Check Path:** `/health`
+
+#### Connect Your Mobile App to Render
+1. Copy your Render URL (e.g., `https://musie-backend.onrender.com`).
+2. Open **Musie → Settings → Spotify & YouTube API Keys Vault**.
+3. Set **Personal Backend URL** to `https://musie-backend.onrender.com`, tap **Save Keys**, and tap **Ping** (the first request on Render's Free tier may take ~30–50 seconds if the instance was asleep).
+
+> **Persistence Note:** On Render's Free tier, the local filesystem resets when the service restarts, so backend `db.json` playlists reset on redeploy (though your API keys stay safely stored on your phone via `expo-secure-store`). To persist backend playlists across redeploys, attach a Render **Persistent Disk** (paid plan) mounted at `/var/data` and set `DATA_DIR=/var/data`.
+
+---
+
 ### 2. Start the Expo SDK 58 Mobile App
 
 > **Node.js Requirement:** Expo SDK 58 requires **Node.js 22.13+**, **24.3+**, or **26+** (avoid odd-numbered Node versions like 23 or 25).
