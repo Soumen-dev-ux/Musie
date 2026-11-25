@@ -1,0 +1,335 @@
+{
+  "likedTracks": [],
+  "playlists": [
+    {
+      "id": "pl-favorites",
+      "name": "My Mix",
+      "description": "Your personal YouTube & Spotify imported tracks",
+      "tracks": [],
+      "source": "local",
+      "createdAt": "2026-11-25T06:23:11.480Z",
+      "updatedAt": "2026-11-25T06:23:11.480Z"
+    }
+  ],
+  "recentlyPlayed": [],
+  "adguardConfig": {
+    "enabled": true,
+    "blockAdDomains": true,
+    "sponsorBlockEnabled": true,
+    "stripTrackingParams": true,
+    "blockThirdPartyAudioAds": true
+  },
+  "adguardRules": [
+    {
+      "id": "default-1",
+      "pattern": "||doubleclick.net^",
+      "type": "block",
+      "comment": "Google DoubleClick ad network",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-2",
+      "pattern": "||googlesyndication.com^",
+      "type": "block",
+      "comment": "Google AdSense / Syndication",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-3",
+      "pattern": "||googleadservices.com^",
+      "type": "block",
+      "comment": "Google AdServices",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-4",
+      "pattern": "||adservice.google.com^",
+      "type": "block",
+      "comment": "Google AdService",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-5",
+      "pattern": "||pagead2.googlesyndication.com^",
+      "type": "block",
+      "comment": "Google PageAd",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-6",
+      "pattern": "||ads.youtube.com^",
+      "type": "block",
+      "comment": "YouTube Ads endpoint",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-7",
+      "pattern": "||google-analytics.com^",
+      "type": "block",
+      "comment": "Google Analytics tracker",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-8",
+      "pattern": "||googletagmanager.com^",
+      "type": "block",
+      "comment": "Google Tag Manager",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-9",
+      "pattern": "||ads-fa.spotify.com^",
+      "type": "block",
+      "comment": "Spotify Audio Ads",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-10",
+      "pattern": "||audio-sp-*.spotifycdn.com^",
+      "type": "block",
+      "comment": "Spotify Ad CDN",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-11",
+      "pattern": "||adeventtracker.spotify.com^",
+      "type": "block",
+      "comment": "Spotify Ad Event Tracker",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-12",
+      "pattern": "||pixel.spotify.com^",
+      "type": "block",
+      "comment": "Spotify Ad Pixel",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-13",
+      "pattern": "||spclient.wg.spotify.com/ads^",
+      "type": "block",
+      "comment": "Spotify Ad Endpoint",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-14",
+      "pattern": "||analytics.spotify.com^",
+      "type": "block",
+      "comment": "Spotify Analytics",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-15",
+      "pattern": "||log2.spotify.com^",
+      "type": "block",
+      "comment": "Spotify Telemetry Logger",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-16",
+      "pattern": "||adswizz.com^",
+      "type": "block",
+      "comment": "AdsWizz Audio Ad Insertion",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-17",
+      "pattern": "||tritondigital.com^",
+      "type": "block",
+      "comment": "Triton Digital Audio Ads",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-18",
+      "pattern": "||ad.doubleclick.net^",
+      "type": "block",
+      "comment": "DoubleClick Ad Insertion",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-19",
+      "pattern": "||pubads.g.doubleclick.net^",
+      "type": "block",
+      "comment": "Google Publisher Ads",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-20",
+      "pattern": "||dai.google.com^",
+      "type": "block",
+      "comment": "Google Dynamic Ad Insertion",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-21",
+      "pattern": "||s0.2mdn.net^",
+      "type": "block",
+      "comment": "DoubleClick Media",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-22",
+      "pattern": "||c.adnxs.com^",
+      "type": "block",
+      "comment": "AppNexus Ad Server",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-23",
+      "pattern": "||ib.adnxs.com^",
+      "type": "block",
+      "comment": "AppNexus Bidding",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-24",
+      "pattern": "||rubiconproject.com^",
+      "type": "block",
+      "comment": "Rubicon Ad Exchange",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-25",
+      "pattern": "||openx.net^",
+      "type": "block",
+      "comment": "OpenX Ad Exchange",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-26",
+      "pattern": "||taboola.com^",
+      "type": "block",
+      "comment": "Taboola Ad Network",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-27",
+      "pattern": "||outbrain.com^",
+      "type": "block",
+      "comment": "Outbrain Ad Network",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-28",
+      "pattern": "||amazon-adsystem.com^",
+      "type": "block",
+      "comment": "Amazon Ad System",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-29",
+      "pattern": "||criteo.com^",
+      "type": "block",
+      "comment": "Criteo Retargeting",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-30",
+      "pattern": "||scorecardresearch.com^",
+      "type": "block",
+      "comment": "Comscore Tracker",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-31",
+      "pattern": "||quantserve.com^",
+      "type": "block",
+      "comment": "Quantcast Tracker",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-32",
+      "pattern": "||segment.io^",
+      "type": "block",
+      "comment": "Segment Telemetry",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-33",
+      "pattern": "||mixpanel.com^",
+      "type": "block",
+      "comment": "Mixpanel Telemetry",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-34",
+      "pattern": "||branch.io^",
+      "type": "block",
+      "comment": "Branch Attribution Tracker",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-35",
+      "pattern": "||adjust.com^",
+      "type": "block",
+      "comment": "Adjust Attribution Tracker",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-36",
+      "pattern": "||appsflyer.com^",
+      "type": "block",
+      "comment": "AppsFlyer Tracker",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-37",
+      "pattern": "||analytics.tiktok.com^",
+      "type": "block",
+      "comment": "TikTok Analytics",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    },
+    {
+      "id": "default-38",
+      "pattern": "||connect.facebook.net^",
+      "type": "block",
+      "comment": "Meta Pixel",
+      "enabled": true,
+      "createdAt": "2026-11-25T06:23:11.480Z"
+    }
+  ],
+  "adguardStats": {
+    "totalInspected": 0,
+    "totalBlocked": 0,
+    "sponsorSegmentsSkipped": 0,
+    "trackingParamsStripped": 0,
+    "recentBlocked": []
+  }
+}
