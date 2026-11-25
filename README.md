@@ -112,7 +112,9 @@ If you create a **Web Service** manually without Docker:
 2. Open **Musie → Settings → Spotify & YouTube API Keys Vault**.
 3. Set **Personal Backend URL** to `https://musie-backend.onrender.com`, tap **Save Keys**, and tap **Ping** (the first request on Render's Free tier may take ~30–50 seconds if the instance was asleep).
 
-> **Persistence Note:** On Render's Free tier, the local filesystem resets when the service restarts, so backend `db.json` playlists reset on redeploy (though your API keys stay safely stored on your phone via `expo-secure-store`). To persist backend playlists across redeploys, attach a Render **Persistent Disk** (paid plan) mounted at `/var/data` and set `DATA_DIR=/var/data`.
+> **Persistence & Anti-Bot Note on Render:**
+> 1. **YouTube Datacenter Blocking:** YouTube frequently blocks anonymous cloud/Render IPs (`403` / *"Sign in to confirm you're not a bot"*). The backend automatically falls back across `yt-dlp` (Docker), `youtubei.js` (`ANDROID_VR`, `TV`, `IOS`, `WEB_EMBEDDED`), and Piped instances. For 100% reliable audio extraction on Render, deploy using the **Docker** runtime (`render.yaml` / `backend/Dockerfile`) and set `YT_COOKIES_CONTENT` (exported Netscape `cookies.txt` from a throwaway YouTube account) in Render's **Environment** tab.
+> 2. **Persistence:** On Render's Free tier, the local filesystem resets when the service restarts, so backend `db.json` playlists reset on redeploy (though your API keys stay safely stored on your phone via `expo-secure-store`). To persist backend playlists across redeploys, attach a Render **Persistent Disk** (paid plan) mounted at `/var/data` and set `DATA_DIR=/var/data`.
 
 ---
 

@@ -1,13 +1,20 @@
+import Constants from 'expo-constants';
 import { AudioPlayer, AudioStatus, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+import { Platform } from 'react-native';
 import { SponsorSegment, Track } from '../types';
-import { apiClient } from './apiClient';
+import { ApiError, apiClient } from './apiClient';
+
+// Expo Go on Android does not bundle the app's AudioControlsService manifest entry
+const isExpoGoAndroid = Platform.OS === 'android' && Constants.appOwnership === 'expo';
 
 type StatusCallback = (status: {
   isPlaying: boolean;
   isBuffering: boolean;
+  isLoaded: boolean;
   positionSec: number;
   durationSec: number;
   didJustFinish: boolean;
+  error: string | null;
 }) => void;
 
 type SponsorSkipCallback = (segment: SponsorSegment) => void;
@@ -16,6 +23,11 @@ class AudioEngine {
   private player: AudioPlayer | null = null;
   private subscription: { remove: () => void } | null = null;
   private audioModeReady = false;
+  private hasError = false;
+  private lastLoaded = false;
+  private shouldAutoPlay = false;
+  private userPaused = false;
+  private loadToken = 0;
   private sponsorSegments: SponsorSegment[] = [];
   private skippedSegmentIds = new Set<string>();
   private sponsorBlockEnabled = true;
@@ -51,43 +63,85 @@ class AudioEngine {
     this.skippedSegmentIds.clear();
   }
 
+  public canResume(): boolean {
+    if (!this.player || this.hasError) return false;
+    return Boolean(
+      this.lastLoaded || this.player.isLoaded || this.player.playing || this.player.isBuffering,
+    );
+  }
+
   public async loadAndPlay(track: Track): Promise<void> {
-    await this.ensureAudioMode();
-    this.sponsorSegments = [];
-    this.skippedSegmentIds.clear();
+    const token = ++this.loadToken;
 
-    const streamUrl = apiClient.getStreamUrl(track.youtubeId);
-
-    if (!this.player) {
-      this.player = createAudioPlayer({ uri: streamUrl }, { updateInterval: 500 });
-      this.attachListener(this.player);
-    } else {
-      this.player.replace({ uri: streamUrl });
+    if (!this.audioModeReady) {
+      await this.ensureAudioMode();
     }
 
+    this.sponsorSegments = [];
+    this.skippedSegmentIds.clear();
+    this.hasError = false;
+    this.lastLoaded = false;
+    this.shouldAutoPlay = true;
+    this.userPaused = false;
+
+    // Dispose any existing player before resolving the next stream so stale audio stops immediately
+    this.dispose();
+
+    // Preflight resolve on backend so extraction/bot-check errors surface immediately
+    // instead of leaving ExoPlayer/AVPlayer hanging in an infinite buffering state.
+    let streamUrl = apiClient.getStreamUrl(track.youtubeId);
+    try {
+      const resolved = await apiClient.resolveStream(track.youtubeId);
+      if (token !== this.loadToken) return;
+      streamUrl = resolved.directUrl || apiClient.getStreamUrl(track.youtubeId);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        // Fallback if backend on Render is running an older build without /resolve
+        const probe = await apiClient.probeDirectStream(track.youtubeId);
+        if (token !== this.loadToken) return;
+        if (!probe.ok) {
+          throw new Error(
+            probe.status === 404
+              ? 'Backend stream route not found (404). Check your Backend URL in Settings.'
+              : `Stream failed (${probe.status}): ${probe.detail || 'Redeploy latest backend to Render.'}`,
+          );
+        }
+      } else {
+        throw err;
+      }
+    }
+
+    // Abort if user already tapped another song while resolving
+    if (token !== this.loadToken) return;
+
+    this.player = createAudioPlayer({ uri: streamUrl }, { updateInterval: 400 });
+    this.attachListener(this.player);
     this.player.play();
 
     // Activate lock-screen & notification media controls once audio session starts
-    setTimeout(() => {
-      if (!this.player) return;
-      try {
-        this.player.setActiveForLockScreen(
-          true,
-          {
-            title: track.title,
-            artist: track.artist,
-            albumTitle: track.album || 'Musie',
-            artworkUrl: track.artworkUrl,
-          },
-          {
-            showSeekForward: true,
-            showSeekBackward: true,
-          },
-        );
-      } catch (err) {
-        console.warn('[AudioEngine] Lock screen metadata error:', err);
-      }
-    }, 300);
+    // (Skip on Android Expo Go, where AudioControlsService is not declared in the host manifest)
+    if (!isExpoGoAndroid) {
+      setTimeout(() => {
+        if (!this.player || token !== this.loadToken) return;
+        try {
+          this.player.setActiveForLockScreen(
+            true,
+            {
+              title: track.title,
+              artist: track.artist,
+              albumTitle: track.album || 'Musie',
+              artworkUrl: track.artworkUrl || undefined,
+            },
+            {
+              showSeekForward: true,
+              showSeekBackward: true,
+            },
+          );
+        } catch (err) {
+          console.warn('[AudioEngine] Lock screen metadata error:', err);
+        }
+      }, 350);
+    }
   }
 
   private attachListener(player: AudioPlayer): void {
@@ -95,9 +149,40 @@ class AudioEngine {
     this.subscription = player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
       const currentTime = Number.isFinite(status.currentTime) ? status.currentTime : 0;
       const duration = Number.isFinite(status.duration) ? status.duration : 0;
+      const error = status.error ? String(status.error) : null;
+
+      if (error) {
+        this.hasError = true;
+        this.lastLoaded = false;
+        this.shouldAutoPlay = false;
+      } else {
+        if (status.isLoaded || status.playing) {
+          this.hasError = false;
+        }
+        this.lastLoaded = Boolean(status.isLoaded);
+
+        // Guard against Android ExoPlayer settling in loaded-but-paused state on initial stream load
+        if (
+          status.isLoaded &&
+          !status.playing &&
+          this.shouldAutoPlay &&
+          !this.userPaused &&
+          !status.didJustFinish &&
+          currentTime < 0.5
+        ) {
+          this.shouldAutoPlay = false;
+          try {
+            player.play();
+          } catch {
+            // ignore
+          }
+        } else if (status.playing) {
+          this.shouldAutoPlay = false;
+        }
+      }
 
       // Auto-skip sponsor/ad segments via AdGuard SponsorBlock
-      if (this.sponsorBlockEnabled && this.sponsorSegments.length > 0 && status.playing) {
+      if (!error && this.sponsorBlockEnabled && this.sponsorSegments.length > 0 && status.playing) {
         for (const seg of this.sponsorSegments) {
           const [start, end] = seg.segment;
           if (
@@ -114,20 +199,25 @@ class AudioEngine {
       }
 
       this.onStatusCb?.({
-        isPlaying: Boolean(status.playing),
-        isBuffering: Boolean(status.isBuffering),
+        isPlaying: error ? false : Boolean(status.playing),
+        isBuffering: error ? false : Boolean(status.isBuffering),
+        isLoaded: error ? false : Boolean(status.isLoaded),
         positionSec: currentTime,
         durationSec: duration,
-        didJustFinish: Boolean(status.didJustFinish),
+        didJustFinish: error ? false : Boolean(status.didJustFinish),
+        error,
       });
     });
   }
 
   public play(): void {
+    this.userPaused = false;
     this.player?.play();
   }
 
   public pause(): void {
+    this.userPaused = true;
+    this.shouldAutoPlay = false;
     this.player?.pause();
   }
 
@@ -137,6 +227,8 @@ class AudioEngine {
   }
 
   public stop(): void {
+    this.userPaused = true;
+    this.shouldAutoPlay = false;
     if (!this.player) return;
     this.player.pause();
     try {
@@ -147,13 +239,13 @@ class AudioEngine {
   }
 
   public updateMetadata(track: Track): void {
-    if (!this.player) return;
+    if (!this.player || isExpoGoAndroid) return;
     try {
       this.player.updateLockScreenMetadata({
         title: track.title,
         artist: track.artist,
         albumTitle: track.album || 'Musie',
-        artworkUrl: track.artworkUrl,
+        artworkUrl: track.artworkUrl || undefined,
       });
     } catch {
       // ignore

@@ -12,6 +12,7 @@ export function MiniPlayer() {
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const isBuffering = usePlayerStore((s) => s.isBuffering);
+  const error = usePlayerStore((s) => s.error);
   const positionSec = usePlayerStore((s) => s.positionSec);
   const durationSec = usePlayerStore((s) => s.durationSec);
   const togglePlayPause = usePlayerStore((s) => s.togglePlayPause);
@@ -37,14 +38,14 @@ export function MiniPlayer() {
           <Text style={styles.title} numberOfLines={1}>
             {currentTrack.title}
           </Text>
-          <Text style={styles.artist} numberOfLines={1}>
-            {currentTrack.artist}
+          <Text style={[styles.artist, error ? styles.errorText : null]} numberOfLines={1}>
+            {error ? `Tap play to retry · ${error}` : currentTrack.artist}
           </Text>
         </View>
 
         <TouchableOpacity
           onPress={(e) => {
-            e.stopPropagation();
+            e?.stopPropagation?.();
             toggleLike(currentTrack);
           }}
           hitSlop={8}
@@ -59,26 +60,26 @@ export function MiniPlayer() {
 
         <TouchableOpacity
           onPress={(e) => {
-            e.stopPropagation();
+            e?.stopPropagation?.();
             togglePlayPause();
           }}
           hitSlop={8}
           style={styles.btn}
         >
-          {isBuffering ? (
+          {isBuffering && !error ? (
             <ActivityIndicator size="small" color={colors.textPrimary} />
           ) : (
             <Ionicons
-              name={isPlaying ? 'pause' : 'play'}
+              name={error ? 'refresh' : isPlaying ? 'pause' : 'play'}
               size={24}
-              color={colors.textPrimary}
+              color={error ? colors.danger : colors.textPrimary}
             />
           )}
         </TouchableOpacity>
 
         <TouchableOpacity
           onPress={(e) => {
-            e.stopPropagation();
+            e?.stopPropagation?.();
             next(false);
           }}
           hitSlop={8}
@@ -131,6 +132,9 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 12,
     marginTop: 2,
+  },
+  errorText: {
+    color: colors.danger,
   },
   btn: {
     padding: 6,

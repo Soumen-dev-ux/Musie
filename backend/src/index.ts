@@ -34,6 +34,8 @@ app.get('/health', (_req, res) => {
   res.json({
     ok: true,
     service: 'musie-backend',
+    version: '1.1.0',
+    features: ['stream-resolve', 'piped-fallback', 'adguard'],
     timestamp: new Date().toISOString(),
   });
 });

@@ -20,3 +20,5 @@ services:
         sync: false
       - key: SPOTIFY_CLIENT_SECRET
         sync: false
+      - key: YT_COOKIES_CONTENT
+        sync: false

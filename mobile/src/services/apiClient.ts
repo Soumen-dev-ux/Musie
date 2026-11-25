@@ -22,24 +22,68 @@ function getHeaders(): Record<string, string> {
 
 function getBaseUrl(): string {
   const { keys } = useSettingsStore.getState();
-  return keys.backendUrl.replace(/\/+$/, '');
+  return keys.backendUrl
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api$/i, '');
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const url = `${getBaseUrl()}${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      ...getHeaders(),
-      ...(options.headers || {}),
-    },
-  });
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data?.error || data?.message || `Request failed (${res.status})`);
+export class ApiError extends Error {
+  status: number;
+  path: string;
+  constructor(message: string, status: number, path: string) {
+    super(message);
+    this.status = status;
+    this.path = path;
   }
-  return data as T;
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  timeoutMs = 30000,
+): Promise<T> {
+  const url = `${getBaseUrl()}${path}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...getHeaders(),
+        ...(options.headers || {}),
+      },
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg =
+        data?.error ||
+        data?.message ||
+        `Request failed (${res.status}) on ${path}`;
+      throw new ApiError(msg, res.status, path);
+    }
+    return data as T;
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error('Request timed out. If Render was asleep, wait a few seconds and retry.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface ResolvedStreamInfo {
+  videoId: string;
+  playableUrl: string;
+  proxyUrl: string;
+  directUrl?: string;
+  mimeType: string;
+  contentLength?: number;
+  resolver: string;
 }
 
 export const apiClient = {
@@ -47,7 +91,35 @@ export const apiClient = {
     return `${getBaseUrl()}/api/stream/${encodeURIComponent(youtubeId)}`;
   },
 
-  health(): Promise<{ ok: boolean; service: string }> {
+  resolveStream(youtubeId: string): Promise<ResolvedStreamInfo> {
+    return request(`/api/stream/${encodeURIComponent(youtubeId)}/resolve`, {}, 45000);
+  },
+
+  async probeDirectStream(youtubeId: string): Promise<{ ok: boolean; status: number; detail?: string }> {
+    const url = this.getStreamUrl(youtubeId);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { Range: 'bytes=0-1023' },
+        signal: controller.signal,
+      });
+      if (res.ok || res.status === 206) {
+        return { ok: true, status: res.status };
+      }
+      const data = await res.json().catch(() => ({}));
+      return {
+        ok: false,
+        status: res.status,
+        detail: data?.error || data?.message || `HTTP ${res.status}`,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+
+  health(): Promise<{ ok: boolean; service: string; version?: string }> {
     return request('/health');
   },
 

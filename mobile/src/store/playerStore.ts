@@ -36,6 +36,14 @@ interface PlayerState {
 
 let engineInitialized = false;
 let handlingFinish = false;
+let bufferingWatchdog: ReturnType<typeof setTimeout> | null = null;
+
+function clearWatchdog(): void {
+  if (bufferingWatchdog) {
+    clearTimeout(bufferingWatchdog);
+    bufferingWatchdog = null;
+  }
+}
 
 export const usePlayerStore = create<PlayerState>((set, get) => ({
   currentTrack: null,
@@ -58,11 +66,26 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     audioEngine.setCallbacks(
       (status) => {
         const trackDuration = get().currentTrack?.duration || 0;
+        if (status.error) {
+          clearWatchdog();
+          set({
+            isPlaying: false,
+            isBuffering: false,
+            error: status.error,
+          });
+          return;
+        }
+
+        if (status.isPlaying || status.isLoaded) {
+          clearWatchdog();
+        }
+
         set({
           isPlaying: status.isPlaying,
           isBuffering: status.isBuffering,
           positionSec: status.positionSec,
           durationSec: status.durationSec > 0 ? status.durationSec : trackDuration,
+          error: status.isPlaying || status.isLoaded ? null : get().error,
         });
 
         if (status.didJustFinish && !handlingFinish) {
@@ -128,6 +151,17 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       error: null,
     });
 
+    clearWatchdog();
+    bufferingWatchdog = setTimeout(() => {
+      const state = get();
+      if (state.currentTrack?.youtubeId === track.youtubeId && state.isBuffering && !state.isPlaying) {
+        set({
+          isBuffering: false,
+          error: 'Stream timed out while buffering. Check Backend Stream Test in Settings.',
+        });
+      }
+    }, 30000);
+
     try {
       await audioEngine.loadAndPlay(track);
       useLibraryStore.getState().recordRecent(track);
@@ -158,6 +192,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           .catch(() => {});
       }
     } catch (error) {
+      clearWatchdog();
       set({
         isBuffering: false,
         isPlaying: false,
@@ -173,14 +208,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   togglePlayPause: () => {
-    const { isPlaying, currentTrack } = get();
+    const { isPlaying, currentTrack, queue, error } = get();
     if (!currentTrack) return;
     if (isPlaying) {
       audioEngine.pause();
       set({ isPlaying: false });
+    } else if (error || !audioEngine.canResume()) {
+      void get().playTrack(currentTrack, queue);
     } else {
       audioEngine.play();
-      set({ isPlaying: true });
+      set({ isPlaying: true, error: null });
     }
   },
 

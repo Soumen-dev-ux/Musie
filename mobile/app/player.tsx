@@ -217,14 +217,14 @@ export default function PlayerScreen() {
             togglePlayPause();
           }}
         >
-          {isBuffering ? (
+          {isBuffering && !error ? (
             <ActivityIndicator size="large" color={colors.background} />
           ) : (
             <Ionicons
-              name={isPlaying ? 'pause' : 'play'}
+              name={error ? 'refresh' : isPlaying ? 'pause' : 'play'}
               size={34}
               color={colors.background}
-              style={!isPlaying ? { marginLeft: 3 } : undefined}
+              style={!isPlaying && !error ? { marginLeft: 3 } : undefined}
             />
           )}
         </TouchableOpacity>

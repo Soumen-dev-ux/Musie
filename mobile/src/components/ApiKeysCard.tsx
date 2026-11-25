@@ -11,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { apiClient } from '../services/apiClient';
+import { ApiError, apiClient } from '../services/apiClient';
 import { useSettingsStore } from '../store/settingsStore';
 import { colors } from '../theme/colors';
 
@@ -31,7 +31,9 @@ export function ApiKeysCard() {
   const [includeSecretsOnShare, setIncludeSecretsOnShare] = useState(false);
   const [importText, setImportText] = useState('');
   const [showImportBox, setShowImportBox] = useState(false);
-  const [testingTarget, setTestingTarget] = useState<'server' | 'youtube' | 'spotify' | null>(null);
+  const [testingTarget, setTestingTarget] = useState<
+    'server' | 'stream' | 'youtube' | 'spotify' | null
+  >(null);
   const [statusMessage, setStatusMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
@@ -58,13 +60,53 @@ export function ApiKeysCard() {
       const res = await apiClient.health();
       setStatusMessage({
         ok: res.ok,
-        text: res.ok ? 'Connected to Musie backend!' : 'Server responded with an error.',
+        text: res.ok
+          ? `Connected to Musie backend${res.version ? ` (v${res.version})` : ' (older build — redeploy Render)'}!`
+          : 'Server responded with an error.',
       });
     } catch (err) {
       setStatusMessage({
         ok: false,
         text: err instanceof Error ? err.message : 'Cannot reach backend server',
       });
+    } finally {
+      setTestingTarget(null);
+    }
+  };
+
+  const handleTestStream = async () => {
+    await handleSave();
+    setTestingTarget('stream');
+    try {
+      const res = await apiClient.resolveStream('dQw4w9WgXcQ');
+      setStatusMessage({
+        ok: true,
+        text: `Audio stream OK via ${res.resolver} (${res.mimeType})`,
+      });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        try {
+          const probe = await apiClient.probeDirectStream('dQw4w9WgXcQ');
+          setStatusMessage({
+            ok: probe.ok,
+            text: probe.ok
+              ? 'Direct stream OK (older backend build detected — push & redeploy Render for /resolve + Piped fallback).'
+              : probe.status === 404
+                ? '404 on /api/stream. Verify your Backend URL (no /api suffix) and redeploy Render.'
+                : `Backend needs redeploy (/resolve 404), and /api/stream returned ${probe.status}: ${probe.detail || ''}`,
+          });
+        } catch (probeErr) {
+          setStatusMessage({
+            ok: false,
+            text: probeErr instanceof Error ? probeErr.message : 'Stream test failed',
+          });
+        }
+      } else {
+        setStatusMessage({
+          ok: false,
+          text: err instanceof Error ? err.message : 'Audio stream resolution failed',
+        });
+      }
     } finally {
       setTestingTarget(null);
     }
@@ -180,6 +222,13 @@ export function ApiKeysCard() {
             <ActivityIndicator size="small" color={colors.background} />
           ) : (
             <Text style={styles.testBtnText}>Ping</Text>
+          )}
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.testBtn} onPress={handleTestStream}>
+          {testingTarget === 'stream' ? (
+            <ActivityIndicator size="small" color={colors.background} />
+          ) : (
+            <Text style={styles.testBtnText}>Stream</Text>
           )}
         </TouchableOpacity>
       </View>
