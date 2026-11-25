@@ -1,10 +1,18 @@
 import axios from 'axios';
-import { Router } from 'express';
+import { Response, Router } from 'express';
 import { adguardUrlGuard } from '../middleware/adguardMiddleware.js';
 import { adguardService } from '../services/adguardService.js';
 import { youtubeService } from '../services/youtubeService.js';
 
 const router = Router();
+
+function forwardHeader(res: Response, name: string, value: unknown, fallback?: string): void {
+  if (typeof value === 'string' || typeof value === 'number' || Array.isArray(value)) {
+    res.setHeader(name, value);
+  } else if (fallback) {
+    res.setHeader(name, fallback);
+  }
+}
 
 /**
  * Streams YouTube audio with HTTP Range support so seeking works smoothly
@@ -41,14 +49,10 @@ router.get('/:videoId', async (req, res) => {
     });
 
     res.status(upstream.status);
-    res.setHeader('Content-Type', upstream.headers['content-type'] || streamInfo.mimeType);
+    forwardHeader(res, 'Content-Type', upstream.headers['content-type'], streamInfo.mimeType);
     res.setHeader('Accept-Ranges', 'bytes');
-    if (upstream.headers['content-length']) {
-      res.setHeader('Content-Length', upstream.headers['content-length']);
-    }
-    if (upstream.headers['content-range']) {
-      res.setHeader('Content-Range', upstream.headers['content-range']);
-    }
+    forwardHeader(res, 'Content-Length', upstream.headers['content-length']);
+    forwardHeader(res, 'Content-Range', upstream.headers['content-range']);
     res.setHeader('Cache-Control', 'public, max-age=1800');
 
     upstream.data.on('error', () => {
@@ -96,15 +100,9 @@ router.get('/proxy/external', adguardUrlGuard, async (req, res) => {
     });
 
     res.status(upstream.status);
-    if (upstream.headers['content-type']) {
-      res.setHeader('Content-Type', upstream.headers['content-type']);
-    }
-    if (upstream.headers['content-length']) {
-      res.setHeader('Content-Length', upstream.headers['content-length']);
-    }
-    if (upstream.headers['content-range']) {
-      res.setHeader('Content-Range', upstream.headers['content-range']);
-    }
+    forwardHeader(res, 'Content-Type', upstream.headers['content-type']);
+    forwardHeader(res, 'Content-Length', upstream.headers['content-length']);
+    forwardHeader(res, 'Content-Range', upstream.headers['content-range']);
     res.setHeader('Accept-Ranges', 'bytes');
     upstream.data.pipe(res);
   } catch (error) {

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import yts from 'yt-search';
+import yts, { type YtsVideo } from 'yt-search';
 import { Innertube } from 'youtubei.js';
 import { env } from '../config/env.js';
 import { Track } from '../types/index.js';
@@ -182,7 +182,7 @@ class YouTubeService {
     const result = await yts(query);
     const videos = (result.videos || []).slice(0, limit);
 
-    return videos.map((v) => {
+    return videos.map((v: YtsVideo) => {
       const thumb = v.thumbnail || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`;
       const inspectedThumb = adguardService.inspectUrl(thumb, 'youtube-thumb');
       return {
