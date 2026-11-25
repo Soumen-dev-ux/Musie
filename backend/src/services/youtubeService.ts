@@ -75,19 +75,26 @@ function cleanArtistName(channelTitle: string): string {
   return channelTitle.replace(/\s*-\s*Topic$/i, '').replace(/VEVO$/i, '').trim() || 'Unknown Artist';
 }
 
+function normalizeCookiesInput(raw: string): string {
+  // Handle single-line escaped newlines if pasted into a single-line env var input
+  const unescaped = raw.includes('\\n') && !raw.includes('\n') ? raw.replace(/\\n/g, '\n') : raw;
+  return unescaped.trim();
+}
+
 function parseNetscapeCookiesToHeader(raw: string): string {
+  const normalized = normalizeCookiesInput(raw);
   const pairs: string[] = [];
-  for (const line of raw.split(/\r?\n/)) {
+  for (const line of normalized.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
-    const cols = trimmed.split('\t');
+    const cols = trimmed.includes('\t') ? trimmed.split('\t') : trimmed.split(/\s+/);
     if (cols.length >= 7) {
       pairs.push(`${cols[5]}=${cols[6]}`);
     }
   }
   if (pairs.length > 0) return pairs.join('; ');
   // If user pasted raw Cookie header directly (e.g. "SAPISID=...; SID=...")
-  return raw.includes('=') && !raw.includes('\n') ? raw.trim() : '';
+  return normalized.includes('=') && !normalized.includes('\n') ? normalized : '';
 }
 
 class YouTubeService {
@@ -106,10 +113,11 @@ class YouTubeService {
   private initCookies(): void {
     try {
       if (env.ytCookiesContent.trim()) {
+        const normalized = normalizeCookiesInput(env.ytCookiesContent);
         const tmpCookiePath = path.join(os.tmpdir(), 'musie-yt-cookies.txt');
-        fs.writeFileSync(tmpCookiePath, env.ytCookiesContent.trim() + '\n', 'utf-8');
+        fs.writeFileSync(tmpCookiePath, normalized + '\n', 'utf-8');
         this.resolvedCookiesFile = tmpCookiePath;
-        this.resolvedCookieHeader = parseNetscapeCookiesToHeader(env.ytCookiesContent);
+        this.resolvedCookieHeader = parseNetscapeCookiesToHeader(normalized);
         return;
       }
       if (env.ytCookiesFile && fs.existsSync(env.ytCookiesFile)) {
@@ -120,6 +128,10 @@ class YouTubeService {
     } catch (err) {
       console.warn('[YouTube] Failed to initialize cookies:', err);
     }
+  }
+
+  public hasCookies(): boolean {
+    return Boolean(this.resolvedCookieHeader || this.resolvedCookiesFile);
   }
 
   private setBoundedCache<K, V>(map: Map<K, V>, key: K, value: V, maxSize: number): void {

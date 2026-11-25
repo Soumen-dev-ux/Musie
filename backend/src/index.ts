@@ -8,6 +8,7 @@ import libraryRoutes from './routes/library.js';
 import spotifyRoutes from './routes/spotify.js';
 import streamRoutes from './routes/stream.js';
 import youtubeRoutes from './routes/youtube.js';
+import { youtubeService } from './services/youtubeService.js';
 
 const app = express();
 
@@ -35,6 +36,7 @@ app.get('/health', (_req, res) => {
     ok: true,
     service: 'musie-backend',
     version: '1.1.0',
+    cookiesLoaded: youtubeService.hasCookies(),
     features: ['stream-resolve', 'piped-fallback', 'adguard'],
     timestamp: new Date().toISOString(),
   });
