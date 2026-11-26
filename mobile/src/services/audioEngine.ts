@@ -1,15 +1,24 @@
+import { isRunningInExpoGo } from 'expo';
 import Constants from 'expo-constants';
 import { AudioPlayer, AudioStatus, createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { Platform } from 'react-native';
+import { useAdGuardStore } from '../store/adguardStore';
 import { SponsorSegment, Track } from '../types';
 import { ApiError, apiClient } from './apiClient';
 import {
   DeviceResolvedStream,
+  invalidateDeviceStreamCache,
+  resolveYoutubeOnDevice,
   resolveYoutubeOnDeviceCandidates,
 } from './youtubeClientResolver';
 
-// Expo Go on Android does not bundle the app's AudioControlsService manifest entry
-const isExpoGoAndroid = Platform.OS === 'android' && Constants.appOwnership === 'expo';
+// Expo Go on Android does not bundle the app's AudioControlsService manifest entry.
+// Use isRunningInExpoGo() because Constants.appOwnership can be null in modern Expo Go.
+const isExpoGoAndroid =
+  Platform.OS === 'android' &&
+  (isRunningInExpoGo() || Constants.appOwnership === 'expo' || Boolean(Constants.expoGoConfig));
+
+const STREAM_CACHE_TTL_MS = 1000 * 60 * 15;
 
 type StatusCallback = (status: {
   isPlaying: boolean;
@@ -49,10 +58,49 @@ class AudioEngine {
   private sponsorSegments: SponsorSegment[] = [];
   private skippedSegmentIds = new Set<string>();
   private sponsorBlockEnabled = true;
+  private resolvedCache = new Map<string, { candidates: PlaybackCandidate[]; expiresAt: number }>();
 
   private onStatusCb: StatusCallback | null = null;
   private onSponsorSkipCb: SponsorSkipCallback | null = null;
   private onStageCb: StageCallback | null = null;
+
+  private getCachedCandidates(videoId: string): PlaybackCandidate[] | null {
+    const entry = this.resolvedCache.get(videoId);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now() || entry.candidates.length === 0) {
+      this.resolvedCache.delete(videoId);
+      return null;
+    }
+    return [...entry.candidates];
+  }
+
+  private cacheCandidate(videoId: string, candidate: PlaybackCandidate): void {
+    const existing = this.resolvedCache.get(videoId);
+    const list = existing && existing.expiresAt > Date.now() ? [...existing.candidates] : [];
+    if (!list.some((c) => c.url === candidate.url)) {
+      list.push(candidate);
+    }
+    if (this.resolvedCache.size >= 80 && !this.resolvedCache.has(videoId)) {
+      const oldest = this.resolvedCache.keys().next().value;
+      if (oldest !== undefined) this.resolvedCache.delete(oldest);
+    }
+    this.resolvedCache.set(videoId, {
+      candidates: list,
+      expiresAt: Date.now() + STREAM_CACHE_TTL_MS,
+    });
+  }
+
+  private invalidateCachedCandidate(videoId: string, label: string): void {
+    const existing = this.resolvedCache.get(videoId);
+    if (!existing) return;
+    const remaining = existing.candidates.filter((c) => c.label !== label);
+    if (remaining.length === 0) {
+      this.resolvedCache.delete(videoId);
+      invalidateDeviceStreamCache(videoId);
+    } else {
+      this.resolvedCache.set(videoId, { ...existing, candidates: remaining });
+    }
+  }
 
   public async ensureAudioMode(): Promise<void> {
     if (this.audioModeReady) return;
@@ -123,61 +171,92 @@ class AudioEngine {
     // Dispose any existing player before resolving the next stream so stale audio stops immediately
     this.clearStallTimer();
     this.dispose();
+
+    const cached = this.getCachedCandidates(track.youtubeId);
+    if (cached && cached.length > 0) {
+      const [first, ...rest] = cached;
+      this.fallbackCandidates = rest;
+      this.playCandidate(track, first, token);
+      return;
+    }
+
     this.onStageCb?.('Resolving audio stream...');
 
-    // Preflight resolve on backend; if Render hits a YouTube datacenter bot-block (502)
-    // or is unreachable, fall back to resolving directly from the phone's IP.
-    let initialCandidate: PlaybackCandidate | null = null;
-
-    try {
-      const resolved = await apiClient.resolveStream(track.youtubeId);
-      if (token !== this.loadToken) return;
-      initialCandidate = {
-        url: resolved.directUrl || apiClient.getStreamUrl(track.youtubeId),
-        label: resolved.resolver || 'backend',
-        kind: 'backend',
-      };
-    } catch (backendErr) {
-      if (token !== this.loadToken) return;
-      this.onStageCb?.('Switching to direct phone stream...');
-
-      if (backendErr instanceof ApiError && backendErr.status === 404) {
-        try {
+    const resolveBackend = async (): Promise<PlaybackCandidate> => {
+      try {
+        const resolved = await apiClient.resolveStream(track.youtubeId, 7500);
+        return {
+          url: resolved.directUrl || apiClient.getStreamUrl(track.youtubeId),
+          label: resolved.resolver || 'backend',
+          kind: 'backend',
+        };
+      } catch (backendErr) {
+        if (backendErr instanceof ApiError && backendErr.status === 404) {
           const probe = await apiClient.probeDirectStream(track.youtubeId);
-          if (token !== this.loadToken) return;
           if (probe.ok) {
-            initialCandidate = {
+            return {
               url: apiClient.getStreamUrl(track.youtubeId),
               label: 'backend:proxy',
               kind: 'backend',
             };
-          } else {
-            this.failedAttempts.push(`backend: ${probe.detail || `HTTP ${probe.status}`}`);
           }
-        } catch (probeErr) {
-          this.failedAttempts.push(
-            `backend: ${probeErr instanceof Error ? probeErr.message : String(probeErr)}`,
-          );
+          throw new Error(`backend: ${probe.detail || `HTTP ${probe.status}`}`);
         }
-      } else {
-        this.failedAttempts.push(
+        throw new Error(
           `backend: ${backendErr instanceof Error ? backendErr.message : String(backendErr)}`,
         );
       }
+    };
+
+    if (Platform.OS === 'web') {
+      const initialCandidate = await resolveBackend();
+      if (token !== this.loadToken) return;
+      this.cacheCandidate(track.youtubeId, initialCandidate);
+      this.playCandidate(track, initialCandidate, token);
+      return;
     }
+
+    // On native devices, race backend resolution and parallel on-device InnerTube resolution
+    // so whichever responds first begins playback immediately while the other becomes a hot backup.
+    const resolveDevice = async (): Promise<PlaybackCandidate> => {
+      const item = await resolveYoutubeOnDevice(track.youtubeId);
+      return {
+        url: item.url,
+        headers: item.headers,
+        label: item.resolver,
+        kind: 'device',
+      };
+    };
+
+    const initialCandidate = await new Promise<PlaybackCandidate>((resolve, reject) => {
+      let settled = false;
+      let failures = 0;
+      const errors: string[] = [];
+
+      const handleSuccess = (candidate: PlaybackCandidate) => {
+        if (token !== this.loadToken) return;
+        this.cacheCandidate(track.youtubeId, candidate);
+        if (!settled) {
+          settled = true;
+          resolve(candidate);
+        } else if (!this.fallbackCandidates.some((c) => c.url === candidate.url)) {
+          this.fallbackCandidates.push(candidate);
+        }
+      };
+
+      const handleError = (err: unknown) => {
+        errors.push(err instanceof Error ? err.message : String(err));
+        failures += 1;
+        if (!settled && failures === 2) {
+          reject(new Error(errors.join(' | ') || 'No playable audio source found'));
+        }
+      };
+
+      resolveDevice().then(handleSuccess, handleError);
+      resolveBackend().then(handleSuccess, handleError);
+    });
 
     if (token !== this.loadToken) return;
-
-    if (!initialCandidate) {
-      await this.loadDeviceCandidates(track.youtubeId, token);
-      if (token !== this.loadToken) return;
-      const next = this.fallbackCandidates.shift();
-      if (!next) {
-        throw new Error(this.failedAttempts.join(' | ') || 'No playable audio source found');
-      }
-      initialCandidate = next;
-    }
-
     this.playCandidate(track, initialCandidate, token);
   }
 
@@ -188,12 +267,17 @@ class AudioEngine {
       const devices: DeviceResolvedStream[] = await resolveYoutubeOnDeviceCandidates(videoId, 4);
       if (token !== this.loadToken) return;
       for (const item of devices) {
-        this.fallbackCandidates.push({
-          url: item.url,
-          headers: item.headers,
-          label: item.resolver,
-          kind: 'device',
-        });
+        if (
+          item.resolver !== this.currentCandidateLabel &&
+          !this.fallbackCandidates.some((c) => c.url === item.url)
+        ) {
+          this.fallbackCandidates.push({
+            url: item.url,
+            headers: item.headers,
+            label: item.resolver,
+            kind: 'device',
+          });
+        }
       }
     } catch (err) {
       this.failedAttempts.push(err instanceof Error ? err.message : String(err));
@@ -209,7 +293,7 @@ class AudioEngine {
 
     this.startPlayer(track, candidate.url, candidate.headers, token);
 
-    // If the stream stalls in ExoPlayer buffering for 9s, automatically advance to the next fallback
+    // If the stream stalls in ExoPlayer buffering for 6.5s, automatically advance to the next fallback
     if (Platform.OS !== 'web') {
       this.stallFallbackTimer = setTimeout(() => {
         if (
@@ -221,13 +305,16 @@ class AudioEngine {
           return;
         }
         void this.tryNextFallback(track, token, `${candidate.label}: buffering stalled`);
-      }, 9000);
+      }, 6500);
     }
   }
 
   private async tryNextFallback(track: Track, token: number, reason: string): Promise<boolean> {
     if (token !== this.loadToken || this.userPaused) return false;
     this.failedAttempts.push(reason);
+    if (this.currentCandidateLabel) {
+      this.invalidateCachedCandidate(track.youtubeId, this.currentCandidateLabel);
+    }
 
     if (this.fallbackCandidates.length === 0 && !this.deviceFallbackLoaded) {
       this.onStageCb?.('Switching to direct phone stream...');
@@ -356,7 +443,15 @@ class AudioEngine {
       }
 
       // Auto-skip sponsor/ad segments via AdGuard SponsorBlock
-      if (!error && this.sponsorBlockEnabled && this.sponsorSegments.length > 0 && status.playing) {
+      const adguardCfg = useAdGuardStore.getState().config;
+      if (
+        !error &&
+        this.sponsorBlockEnabled &&
+        adguardCfg.enabled &&
+        adguardCfg.sponsorBlockEnabled &&
+        this.sponsorSegments.length > 0 &&
+        status.playing
+      ) {
         for (const seg of this.sponsorSegments) {
           const [start, end] = seg.segment;
           if (

@@ -1,7 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 import { apiClient } from '../services/apiClient';
-import { audioEngine } from '../services/audioEngine';
 import { AdGuardConfig, AdGuardRule, AdGuardStats } from '../types';
 
 const ADGUARD_CACHE_KEY = 'musie_adguard_cache_v1';
@@ -54,9 +53,6 @@ export const useAdGuardStore = create<AdGuardState>((set, get) => ({
           stats?: AdGuardStats;
         };
         if (parsed.config) {
-          audioEngine.setSponsorBlockEnabled(
-            parsed.config.enabled && parsed.config.sponsorBlockEnabled,
-          );
           set({ config: parsed.config });
         }
         if (parsed.rules) set({ rules: parsed.rules });
@@ -75,9 +71,6 @@ export const useAdGuardStore = create<AdGuardState>((set, get) => ({
         apiClient.getAdGuardStatus(),
         apiClient.getAdGuardRules(),
       ]);
-      audioEngine.setSponsorBlockEnabled(
-        statusRes.config.enabled && statusRes.config.sponsorBlockEnabled,
-      );
       set({
         config: statusRes.config,
         stats: statusRes.stats,
@@ -102,7 +95,6 @@ export const useAdGuardStore = create<AdGuardState>((set, get) => ({
 
   updateConfig: async (patch) => {
     const optimistic = { ...get().config, ...patch };
-    audioEngine.setSponsorBlockEnabled(optimistic.enabled && optimistic.sponsorBlockEnabled);
     set({ config: optimistic });
     try {
       const { config } = await apiClient.updateAdGuardConfig(patch);

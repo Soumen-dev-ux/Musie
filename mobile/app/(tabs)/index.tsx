@@ -18,6 +18,7 @@ import { apiClient } from '../../src/services/apiClient';
 import { useAdGuardStore } from '../../src/store/adguardStore';
 import { useLibraryStore } from '../../src/store/libraryStore';
 import { usePlayerStore } from '../../src/store/playerStore';
+import { useSettingsStore } from '../../src/store/settingsStore';
 import { colors } from '../../src/theme/colors';
 import { HomeSection } from '../../src/types';
 
@@ -40,6 +41,8 @@ export default function HomeScreen() {
   const playTrack = usePlayerStore((s) => s.playTrack);
   const adguardConfig = useAdGuardStore((s) => s.config);
   const adguardStats = useAdGuardStore((s) => s.stats);
+  const settingsLoaded = useSettingsStore((s) => s.loaded);
+  const backendUrl = useSettingsStore((s) => s.keys.backendUrl);
 
   const loadFeed = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -62,8 +65,9 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
+    if (!settingsLoaded) return;
     loadFeed();
-  }, [loadFeed]);
+  }, [settingsLoaded, backendUrl, loadFeed]);
 
   return (
     <LinearGradient colors={['#1F3528', colors.background, colors.background]} style={{ flex: 1 }}>

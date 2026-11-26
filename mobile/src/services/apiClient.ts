@@ -94,8 +94,8 @@ export const apiClient = {
     return `${getBaseUrl()}/api/stream/${encodeURIComponent(youtubeId)}`;
   },
 
-  resolveStream(youtubeId: string): Promise<ResolvedStreamInfo> {
-    return request(`/api/stream/${encodeURIComponent(youtubeId)}/resolve`, {}, 14000);
+  resolveStream(youtubeId: string, timeoutMs = 10000): Promise<ResolvedStreamInfo> {
+    return request(`/api/stream/${encodeURIComponent(youtubeId)}/resolve`, {}, timeoutMs);
   },
 
   async probeDirectStream(youtubeId: string): Promise<{ ok: boolean; status: number; detail?: string }> {

@@ -123,38 +123,57 @@ const CLIENT_PROFILES: InnerTubeClientProfile[] = [
 ];
 
 let cachedVisitorData: { value: string; expiresAt: number } | null = null;
+let inflightVisitorData: Promise<string> | null = null;
 
-async function getVisitorData(): Promise<string> {
+function fetchVisitorData(): Promise<string> {
+  if (cachedVisitorData && cachedVisitorData.expiresAt > Date.now()) {
+    return Promise.resolve(cachedVisitorData.value);
+  }
+  if (inflightVisitorData) {
+    return inflightVisitorData;
+  }
+
+  inflightVisitorData = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    try {
+      const res = await fetch('https://www.youtube.com/sw.js_data', {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        },
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      const cleaned = text.replace(/^\)\]\}'\s*/, '');
+      const match = cleaned.match(/"(Cg[a-zA-Z0-9_%-]{10,})"/);
+      if (match?.[1]) {
+        cachedVisitorData = {
+          value: match[1],
+          expiresAt: Date.now() + 1000 * 60 * 30,
+        };
+        return match[1];
+      }
+    } catch {
+      // ignore and proceed without visitorData
+    } finally {
+      clearTimeout(timer);
+      inflightVisitorData = null;
+    }
+    return '';
+  })();
+
+  return inflightVisitorData;
+}
+
+async function getVisitorDataFast(): Promise<string> {
   if (cachedVisitorData && cachedVisitorData.expiresAt > Date.now()) {
     return cachedVisitorData.value;
   }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4500);
-  try {
-    const res = await fetch('https://www.youtube.com/sw.js_data', {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      },
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    const cleaned = text.replace(/^\)\]\}'\s*/, '');
-    const match = cleaned.match(/"(Cg[a-zA-Z0-9_%-]{10,})"/);
-    if (match?.[1]) {
-      cachedVisitorData = {
-        value: match[1],
-        expiresAt: Date.now() + 1000 * 60 * 30,
-      };
-      return match[1];
-    }
-  } catch {
-    // ignore and proceed without visitorData
-  } finally {
-    clearTimeout(timer);
-  }
-  return '';
+  return Promise.race([
+    fetchVisitorData(),
+    new Promise<string>((resolve) => setTimeout(() => resolve(''), 900)),
+  ]);
 }
 
 interface AdaptiveFormat {
@@ -190,9 +209,11 @@ export interface DeviceResolvedStream {
 }
 
 async function probeUrlReadable(url: string, headers?: Record<string, string>): Promise<boolean> {
-  const fetchChunk = async (rangeHeader?: string): Promise<{ ok: boolean; status: number; contentType: string; bytes: number }> => {
+  const fetchChunk = async (
+    rangeHeader?: string,
+  ): Promise<{ ok: boolean; status: number; contentType: string; bytes: number }> => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
+    const timer = setTimeout(() => controller.abort(), 3000);
     try {
       const reqHeaders: Record<string, string> = { ...(headers || {}) };
       if (rangeHeader) {
@@ -219,18 +240,19 @@ async function probeUrlReadable(url: string, headers?: Record<string, string>): 
     }
   };
 
-  // For HLS playlists, verify the manifest itself loads and contains #EXTM3U
+  // For HLS playlists, verify the manifest itself loads
   if (url.includes('.m3u8') || url.includes('hls_playlist')) {
     const res = await fetchChunk();
     return res.ok;
   }
 
-  // Probe both initial bytes and a second chunk so URLs that 403 after byte 0 are rejected
-  const first = await fetchChunk('bytes=0-32767');
+  // Probe both initial 1KB and a second 1KB chunk in parallel so URLs that 403 after byte 0 are rejected in 1 RTT
+  const [first, second] = await Promise.all([
+    fetchChunk('bytes=0-1023'),
+    fetchChunk('bytes=65536-66559'),
+  ]);
   if (!first.ok) return false;
-  if (first.bytes < 32768) return true;
-
-  const second = await fetchChunk('bytes=65536-98303');
+  if (first.bytes < 1024) return true;
   return second.ok || second.status === 416;
 }
 
@@ -255,9 +277,170 @@ function scoreAudioCandidate(f: AdaptiveFormat): number {
   return (isMp4Aac ? 1_000_000 : isWebm ? 400_000 : 100_000) + idealBitrateScore;
 }
 
+const DEVICE_CACHE_TTL_MS = 1000 * 60 * 15;
+const deviceStreamCache = new Map<string, { streams: DeviceResolvedStream[]; expiresAt: number }>();
+
+export function invalidateDeviceStreamCache(videoId: string): void {
+  deviceStreamCache.delete(videoId);
+}
+
+function cacheDeviceStreams(videoId: string, streams: DeviceResolvedStream[]): void {
+  if (streams.length === 0) return;
+  if (deviceStreamCache.has(videoId)) {
+    deviceStreamCache.delete(videoId);
+  } else if (deviceStreamCache.size >= 100) {
+    const oldest = deviceStreamCache.keys().next().value;
+    if (oldest !== undefined) deviceStreamCache.delete(oldest);
+  }
+  deviceStreamCache.set(videoId, {
+    streams,
+    expiresAt: Date.now() + DEVICE_CACHE_TTL_MS,
+  });
+}
+
+function firstResolved<T>(promises: Promise<T>[]): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (promises.length === 0) {
+      reject(new Error('No candidates to resolve'));
+      return;
+    }
+    const errors: unknown[] = new Array(promises.length);
+    let failures = 0;
+    let settled = false;
+
+    promises.forEach((p, idx) => {
+      p.then(
+        (value) => {
+          if (!settled) {
+            settled = true;
+            resolve(value);
+          }
+        },
+        (err) => {
+          errors[idx] = err;
+          failures += 1;
+          if (!settled && failures === promises.length) {
+            const msg = errors
+              .map((e) => (e instanceof Error ? e.message : String(e)))
+              .join(' | ');
+            reject(new Error(msg));
+          }
+        },
+      );
+    });
+  });
+}
+
+async function resolveProfileStream(
+  videoId: string,
+  profile: InnerTubeClientProfile,
+  visitorData: string,
+  config: ReturnType<typeof useAdGuardStore.getState>['config'],
+  rules: ReturnType<typeof useAdGuardStore.getState>['rules'],
+): Promise<DeviceResolvedStream> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5500);
+
+  try {
+    const headers: Record<string, string> = {
+      Accept: '*/*',
+      'Content-Type': 'application/json',
+      'User-Agent': profile.userAgent,
+      'X-Youtube-Client-Name': profile.clientId,
+      'X-Youtube-Client-Version': profile.clientVersion,
+      ...(profile.extraHeaders || {}),
+    };
+    if (visitorData) {
+      headers['X-Goog-Visitor-Id'] = visitorData;
+    }
+
+    const clientContext: Record<string, string | number> = {
+      ...profile.client,
+      ...(visitorData ? { visitorData } : {}),
+    };
+
+    const res = await fetch(profile.endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        context: {
+          client: clientContext,
+          ...(profile.thirdParty ? { thirdParty: profile.thirdParty } : {}),
+        },
+        videoId,
+        contentCheckOk: true,
+        racyCheckOk: true,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      throw new Error(`${profile.name}: HTTP ${res.status}`);
+    }
+
+    const data = (await res.json()) as PlayerResponse;
+    const status = data.playabilityStatus?.status;
+    const adaptive = data.streamingData?.adaptiveFormats || [];
+    const muxed = data.streamingData?.formats || [];
+    const hlsUrl = data.streamingData?.hlsManifestUrl;
+
+    if (status && status !== 'OK' && adaptive.length === 0 && muxed.length === 0 && !hlsUrl) {
+      throw new Error(`${profile.name}: ${data.playabilityStatus?.reason || status}`);
+    }
+
+    const audioCandidates = adaptive
+      .filter(isPlayableAudioFormat)
+      .sort((a, b) => scoreAudioCandidate(b) - scoreAudioCandidate(a));
+
+    const muxedCandidates = muxed.filter(
+      (f) => Boolean(f.url) && f.type !== 'FORMAT_STREAM_TYPE_OTF' && !f.url?.includes('otf=1'),
+    );
+    const candidates = [...audioCandidates, ...muxedCandidates].slice(0, 2);
+
+    for (const candidate of candidates) {
+      if (!candidate.url) continue;
+      const guard = filterExternalUrl(candidate.url, config, rules);
+      if (!guard.allowed) continue;
+
+      const reqHeaders = { 'User-Agent': profile.userAgent };
+      if (await probeUrlReadable(candidate.url, reqHeaders)) {
+        return {
+          url: candidate.url,
+          mimeType: candidate.mimeType?.split(';')[0] || 'audio/mp4',
+          resolver: `device:${profile.name}`,
+          headers: reqHeaders,
+        };
+      }
+    }
+
+    if (hlsUrl) {
+      const guard = filterExternalUrl(hlsUrl, config, rules);
+      const reqHeaders = { 'User-Agent': profile.userAgent };
+      if (guard.allowed && (await probeUrlReadable(hlsUrl, reqHeaders))) {
+        return {
+          url: hlsUrl,
+          mimeType: 'application/x-mpegURL',
+          resolver: `device:${profile.name}-hls`,
+          headers: reqHeaders,
+        };
+      }
+    }
+
+    throw new Error(`${profile.name}: no readable audio stream`);
+  } catch (err) {
+    clearTimeout(timer);
+    if (err instanceof Error && err.message.startsWith(`${profile.name}:`)) {
+      throw err;
+    }
+    throw new Error(`${profile.name}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /**
  * Resolves candidate direct audio streams from the user's phone (residential/5G IP)
- * when a cloud backend (like Render) is rate-limited or bot-blocked by YouTube.
+ * concurrently across InnerTube client profiles so playback starts on the first hit.
  */
 export async function resolveYoutubeOnDeviceCandidates(
   videoId: string,
@@ -267,121 +450,45 @@ export async function resolveYoutubeOnDeviceCandidates(
     throw new Error('On-device InnerTube fallback is only available on native iOS/Android.');
   }
 
-  const { config, rules } = useAdGuardStore.getState();
-  const visitorData = await getVisitorData();
-  const errors: string[] = [];
-  const verified: DeviceResolvedStream[] = [];
-
-  for (const profile of CLIENT_PROFILES) {
-    if (verified.length >= maxCandidates) break;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-
-    try {
-      const headers: Record<string, string> = {
-        Accept: '*/*',
-        'Content-Type': 'application/json',
-        'User-Agent': profile.userAgent,
-        'X-Youtube-Client-Name': profile.clientId,
-        'X-Youtube-Client-Version': profile.clientVersion,
-        ...(profile.extraHeaders || {}),
-      };
-      if (visitorData) {
-        headers['X-Goog-Visitor-Id'] = visitorData;
-      }
-
-      const clientContext: Record<string, string | number> = {
-        ...profile.client,
-        ...(visitorData ? { visitorData } : {}),
-      };
-
-      const res = await fetch(profile.endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          context: {
-            client: clientContext,
-            ...(profile.thirdParty ? { thirdParty: profile.thirdParty } : {}),
-          },
-          videoId,
-          contentCheckOk: true,
-          racyCheckOk: true,
-        }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timer);
-
-      if (!res.ok) {
-        errors.push(`${profile.name}: HTTP ${res.status}`);
-        continue;
-      }
-
-      const data = (await res.json()) as PlayerResponse;
-      const status = data.playabilityStatus?.status;
-      const adaptive = data.streamingData?.adaptiveFormats || [];
-      const muxed = data.streamingData?.formats || [];
-      const hlsUrl = data.streamingData?.hlsManifestUrl;
-
-      if (status && status !== 'OK' && adaptive.length === 0 && muxed.length === 0 && !hlsUrl) {
-        errors.push(`${profile.name}: ${data.playabilityStatus?.reason || status}`);
-        continue;
-      }
-
-      const audioCandidates = adaptive
-        .filter(isPlayableAudioFormat)
-        .sort((a, b) => scoreAudioCandidate(b) - scoreAudioCandidate(a));
-
-      const muxedCandidates = muxed.filter(
-        (f) => Boolean(f.url) && f.type !== 'FORMAT_STREAM_TYPE_OTF' && !f.url?.includes('otf=1'),
-      );
-      const candidates = [...audioCandidates, ...muxedCandidates];
-
-      let foundForProfile = false;
-      for (const candidate of candidates) {
-        if (!candidate.url) continue;
-        const guard = filterExternalUrl(candidate.url, config, rules);
-        if (!guard.allowed) continue;
-
-        const reqHeaders = { 'User-Agent': profile.userAgent };
-        if (await probeUrlReadable(candidate.url, reqHeaders)) {
-          verified.push({
-            url: candidate.url,
-            mimeType: candidate.mimeType?.split(';')[0] || 'audio/mp4',
-            resolver: `device:${profile.name}`,
-            headers: reqHeaders,
-          });
-          foundForProfile = true;
-          break;
-        }
-      }
-
-      if (!foundForProfile && hlsUrl) {
-        const guard = filterExternalUrl(hlsUrl, config, rules);
-        const reqHeaders = { 'User-Agent': profile.userAgent };
-        if (guard.allowed && (await probeUrlReadable(hlsUrl, reqHeaders))) {
-          verified.push({
-            url: hlsUrl,
-            mimeType: 'application/x-mpegURL',
-            resolver: `device:${profile.name}-hls`,
-            headers: reqHeaders,
-          });
-          foundForProfile = true;
-        }
-      }
-
-      if (!foundForProfile) {
-        errors.push(`${profile.name}: no readable audio stream`);
-      }
-    } catch (err) {
-      clearTimeout(timer);
-      errors.push(`${profile.name}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  const cached = deviceStreamCache.get(videoId);
+  if (cached && cached.expiresAt > Date.now() && cached.streams.length > 0) {
+    return cached.streams.slice(0, maxCandidates);
   }
 
-  if (verified.length > 0) {
-    return verified;
+  const { config, rules } = useAdGuardStore.getState();
+  const visitorData = await getVisitorDataFast();
+
+  const profilePromises = CLIENT_PROFILES.map((profile) =>
+    resolveProfileStream(videoId, profile, visitorData, config, rules),
+  );
+
+  // Collect all resolved streams in the background to populate cache for instant fallbacks
+  const allCollectedPromise = Promise.allSettled(profilePromises).then((results) => {
+    const collected: DeviceResolvedStream[] = [];
+    const errors: string[] = [];
+    for (const r of results) {
+      if (r.status === 'fulfilled') {
+        collected.push(r.value);
+      } else {
+        errors.push(r.reason instanceof Error ? r.reason.message : String(r.reason));
+      }
+    }
+    if (collected.length > 0) {
+      cacheDeviceStreams(videoId, collected);
+    }
+    return { collected, errors };
+  });
+
+  if (maxCandidates <= 1) {
+    const first = await firstResolved(profilePromises);
+    cacheDeviceStreams(videoId, [first]);
+    void allCollectedPromise;
+    return [first];
+  }
+
+  const { collected, errors } = await allCollectedPromise;
+  if (collected.length > 0) {
+    return collected.slice(0, maxCandidates);
   }
 
   throw new Error(`On-device fallback failed (${errors.join(' | ')})`);

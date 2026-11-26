@@ -399,25 +399,39 @@ class YouTubeService {
    */
   private async verifyStreamReadable(stream: CachedStream): Promise<boolean> {
     try {
-      const headers: Record<string, string> = {
+      const baseHeaders: Record<string, string> = {
         'User-Agent': stream.headers?.['User-Agent'] || DEFAULT_WEB_UA,
-        Range: 'bytes=0-32767',
       };
       if (stream.headers?.Referer) {
-        headers.Referer = stream.headers.Referer;
+        baseHeaders.Referer = stream.headers.Referer;
       }
-      const probe = await axios.get(stream.url, {
-        headers,
-        responseType: 'arraybuffer',
-        timeout: 4500,
-        validateStatus: (s) => s >= 200 && s < 400,
-      });
-      const contentType = String(probe.headers['content-type'] || '');
-      if (contentType.includes('text/html') || !(probe.data?.byteLength > 0)) {
+
+      const [probe1, probe2] = await Promise.all([
+        axios
+          .get(stream.url, {
+            headers: { ...baseHeaders, Range: 'bytes=0-1023' },
+            responseType: 'arraybuffer',
+            timeout: 3500,
+            validateStatus: (s) => s >= 200 && s < 400,
+          })
+          .catch(() => null),
+        axios
+          .get(stream.url, {
+            headers: { ...baseHeaders, Range: 'bytes=65536-66559' },
+            responseType: 'arraybuffer',
+            timeout: 3500,
+            validateStatus: (s) => (s >= 200 && s < 400) || s === 416,
+          })
+          .catch(() => null),
+      ]);
+
+      if (!probe1) return false;
+      const contentType = String(probe1.headers['content-type'] || '');
+      if (contentType.includes('text/html') || !(probe1.data?.byteLength > 0)) {
         return false;
       }
       if (!stream.contentLength) {
-        const contentRange = probe.headers['content-range'];
+        const contentRange = probe1.headers['content-range'];
         if (typeof contentRange === 'string') {
           const totalMatch = contentRange.match(/\/(\d+)$/);
           if (totalMatch) {
@@ -425,19 +439,10 @@ class YouTubeService {
           }
         }
       }
-      // Verify a second byte range when stream is larger than 64 KB to catch chunk-2 403s
-      if (probe.data.byteLength >= 32768) {
-        const probe2 = await axios.get(stream.url, {
-          headers: { ...headers, Range: 'bytes=65536-98303' },
-          responseType: 'arraybuffer',
-          timeout: 4500,
-          validateStatus: (s) => (s >= 200 && s < 400) || s === 416,
-        });
-        if (probe2.status !== 416 && !(probe2.data?.byteLength > 0)) {
-          return false;
-        }
+      if (probe1.data.byteLength < 1024) {
+        return true;
       }
-      return true;
+      return Boolean(probe2 && (probe2.status === 416 || probe2.data?.byteLength > 0));
     } catch {
       return false;
     }
@@ -576,70 +581,84 @@ class YouTubeService {
     };
   }
 
+  private async resolveWithInnertubeProfile(
+    innertube: Innertube,
+    videoId: string,
+    profile: { client: InnertubeClientName; userAgent: string },
+  ): Promise<CachedStream> {
+    const info = await innertube.getBasicInfo(videoId, { client: profile.client });
+    const status = info.playability_status?.status;
+    if (status && status !== 'OK' && !info.streaming_data) {
+      throw new Error(`${profile.client}: ${info.playability_status?.reason || status}`);
+    }
+
+    const format =
+      info.chooseFormat({
+        type: 'audio',
+        quality: 'best',
+        format: 'mp4',
+      }) ||
+      info.chooseFormat({
+        type: 'audio',
+        quality: 'best',
+      });
+
+    if (!format || format.is_type_otf) {
+      throw new Error(`${profile.client}: No progressive audio format available`);
+    }
+
+    let decipheredUrl = '';
+    try {
+      decipheredUrl = await format.decipher(innertube.session.player);
+    } catch {
+      decipheredUrl = format.url || '';
+    }
+    if (!decipheredUrl && format.url) {
+      decipheredUrl = format.url;
+    }
+
+    if (!decipheredUrl || decipheredUrl.includes('otf=1')) {
+      throw new Error(`${profile.client}: Failed to decipher stream URL`);
+    }
+
+    const candidate: CachedStream = {
+      url: decipheredUrl,
+      mimeType: format.mime_type?.split(';')[0] || 'audio/mp4',
+      contentLength: format.content_length ? Number(format.content_length) : undefined,
+      headers: { 'User-Agent': profile.userAgent },
+      resolver: `innertube:${profile.client}`,
+      preferDirect: false,
+      expiresAt: Date.now() + 1000 * 60 * 25,
+    };
+
+    if (await this.verifyStreamReadable(candidate)) {
+      return candidate;
+    }
+    throw new Error(`${profile.client}: Stream URL returned 403/unreadable`);
+  }
+
   private async resolveWithInnertube(videoId: string): Promise<CachedStream> {
     const innertube = await this.getInnertube();
-    let lastError = 'No playable audio format found';
+    const errors: string[] = [];
+    const waves = [INNERTUBE_CLIENTS.slice(0, 3), INNERTUBE_CLIENTS.slice(3)];
 
-    for (const profile of INNERTUBE_CLIENTS) {
+    for (const wave of waves) {
       try {
-        const info = await innertube.getBasicInfo(videoId, { client: profile.client });
-        const status = info.playability_status?.status;
-        if (status && status !== 'OK' && !info.streaming_data) {
-          lastError = `${profile.client}: ${info.playability_status?.reason || status}`;
-          continue;
+        return await Promise.any(
+          wave.map((profile) => this.resolveWithInnertubeProfile(innertube, videoId, profile)),
+        );
+      } catch (aggErr) {
+        if (aggErr instanceof AggregateError) {
+          for (const e of aggErr.errors) {
+            errors.push(e instanceof Error ? e.message : String(e));
+          }
+        } else {
+          errors.push(aggErr instanceof Error ? aggErr.message : String(aggErr));
         }
-
-        const format =
-          info.chooseFormat({
-            type: 'audio',
-            quality: 'best',
-            format: 'mp4',
-          }) ||
-          info.chooseFormat({
-            type: 'audio',
-            quality: 'best',
-          });
-
-        if (!format || format.is_type_otf) {
-          lastError = `${profile.client}: No progressive audio format available`;
-          continue;
-        }
-
-        let decipheredUrl = '';
-        try {
-          decipheredUrl = await format.decipher(innertube.session.player);
-        } catch {
-          decipheredUrl = format.url || '';
-        }
-        if (!decipheredUrl && format.url) {
-          decipheredUrl = format.url;
-        }
-
-        if (!decipheredUrl || decipheredUrl.includes('otf=1')) {
-          lastError = `${profile.client}: Failed to decipher stream URL`;
-          continue;
-        }
-
-        const candidate: CachedStream = {
-          url: decipheredUrl,
-          mimeType: format.mime_type?.split(';')[0] || 'audio/mp4',
-          contentLength: format.content_length ? Number(format.content_length) : undefined,
-          headers: { 'User-Agent': profile.userAgent },
-          resolver: `innertube:${profile.client}`,
-          preferDirect: false,
-          expiresAt: Date.now() + 1000 * 60 * 25,
-        };
-
-        if (await this.verifyStreamReadable(candidate)) {
-          return candidate;
-        }
-        lastError = `${profile.client}: Stream URL returned 403/unreadable`;
-      } catch (err) {
-        lastError = `${profile.client}: ${err instanceof Error ? err.message : String(err)}`;
       }
     }
 
-    throw new Error(lastError);
+    throw new Error(errors.join('; ') || 'No playable audio format found');
   }
 
   private async resolveWithPiped(videoId: string): Promise<CachedStream> {
@@ -669,7 +688,7 @@ class YouTubeService {
         return (b.bitrate || 0) - (a.bitrate || 0);
       });
 
-      for (const stream of sorted) {
+      for (const stream of sorted.slice(0, 2)) {
         if (!stream.url) continue;
         const candidate: CachedStream = {
           url: stream.url,
@@ -759,7 +778,7 @@ class YouTubeService {
         return Number(b.bitrate || 0) - Number(a.bitrate || 0);
       });
 
-      for (const fmt of sorted) {
+      for (const fmt of sorted.slice(0, 2)) {
         if (!fmt.url) continue;
         const absoluteUrl = fmt.url.startsWith('http')
           ? fmt.url
