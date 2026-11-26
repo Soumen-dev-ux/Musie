@@ -3,7 +3,10 @@ import { AudioPlayer, AudioStatus, createAudioPlayer, setAudioModeAsync } from '
 import { Platform } from 'react-native';
 import { SponsorSegment, Track } from '../types';
 import { ApiError, apiClient } from './apiClient';
-import { resolveYoutubeOnDevice } from './youtubeClientResolver';
+import {
+  DeviceResolvedStream,
+  resolveYoutubeOnDeviceCandidates,
+} from './youtubeClientResolver';
 
 // Expo Go on Android does not bundle the app's AudioControlsService manifest entry
 const isExpoGoAndroid = Platform.OS === 'android' && Constants.appOwnership === 'expo';
@@ -18,23 +21,38 @@ type StatusCallback = (status: {
   error: string | null;
 }) => void;
 
+type StageCallback = (stage: string | null) => void;
 type SponsorSkipCallback = (segment: SponsorSegment) => void;
+
+interface PlaybackCandidate {
+  url: string;
+  headers?: Record<string, string>;
+  label: string;
+  kind: 'backend' | 'device';
+}
 
 class AudioEngine {
   private player: AudioPlayer | null = null;
   private subscription: { remove: () => void } | null = null;
+  private stallFallbackTimer: ReturnType<typeof setTimeout> | null = null;
   private audioModeReady = false;
   private hasError = false;
   private lastLoaded = false;
   private shouldAutoPlay = false;
   private userPaused = false;
   private loadToken = 0;
+  private activeTrack: Track | null = null;
+  private fallbackCandidates: PlaybackCandidate[] = [];
+  private currentCandidateLabel = '';
+  private failedAttempts: string[] = [];
+  private deviceFallbackLoaded = false;
   private sponsorSegments: SponsorSegment[] = [];
   private skippedSegmentIds = new Set<string>();
   private sponsorBlockEnabled = true;
 
   private onStatusCb: StatusCallback | null = null;
   private onSponsorSkipCb: SponsorSkipCallback | null = null;
+  private onStageCb: StageCallback | null = null;
 
   public async ensureAudioMode(): Promise<void> {
     if (this.audioModeReady) return;
@@ -50,9 +68,21 @@ class AudioEngine {
     }
   }
 
-  public setCallbacks(onStatus: StatusCallback, onSponsorSkip: SponsorSkipCallback): void {
+  public setCallbacks(
+    onStatus: StatusCallback,
+    onSponsorSkip: SponsorSkipCallback,
+    onStage?: StageCallback,
+  ): void {
     this.onStatusCb = onStatus;
     this.onSponsorSkipCb = onSponsorSkip;
+    this.onStageCb = onStage ?? null;
+  }
+
+  private clearStallTimer(): void {
+    if (this.stallFallbackTimer) {
+      clearTimeout(this.stallFallbackTimer);
+      this.stallFallbackTimer = null;
+    }
   }
 
   public setSponsorBlockEnabled(enabled: boolean): void {
@@ -84,68 +114,145 @@ class AudioEngine {
     this.lastLoaded = false;
     this.shouldAutoPlay = true;
     this.userPaused = false;
+    this.activeTrack = track;
+    this.fallbackCandidates = [];
+    this.currentCandidateLabel = '';
+    this.failedAttempts = [];
+    this.deviceFallbackLoaded = Platform.OS === 'web';
 
     // Dispose any existing player before resolving the next stream so stale audio stops immediately
+    this.clearStallTimer();
     this.dispose();
+    this.onStageCb?.('Resolving audio stream...');
 
     // Preflight resolve on backend; if Render hits a YouTube datacenter bot-block (502)
     // or is unreachable, fall back to resolving directly from the phone's IP.
-    let streamUrl = apiClient.getStreamUrl(track.youtubeId);
-    let streamHeaders: Record<string, string> | undefined;
+    let initialCandidate: PlaybackCandidate | null = null;
 
     try {
       const resolved = await apiClient.resolveStream(track.youtubeId);
       if (token !== this.loadToken) return;
-      streamUrl = resolved.directUrl || apiClient.getStreamUrl(track.youtubeId);
+      initialCandidate = {
+        url: resolved.directUrl || apiClient.getStreamUrl(track.youtubeId),
+        label: resolved.resolver || 'backend',
+        kind: 'backend',
+      };
     } catch (backendErr) {
       if (token !== this.loadToken) return;
+      this.onStageCb?.('Switching to direct phone stream...');
 
       if (backendErr instanceof ApiError && backendErr.status === 404) {
         try {
           const probe = await apiClient.probeDirectStream(track.youtubeId);
           if (token !== this.loadToken) return;
           if (probe.ok) {
-            streamUrl = apiClient.getStreamUrl(track.youtubeId);
+            initialCandidate = {
+              url: apiClient.getStreamUrl(track.youtubeId),
+              label: 'backend:proxy',
+              kind: 'backend',
+            };
           } else {
-            const deviceResolved = await resolveYoutubeOnDevice(track.youtubeId);
-            if (token !== this.loadToken) return;
-            streamUrl = deviceResolved.url;
-            streamHeaders = deviceResolved.headers;
+            this.failedAttempts.push(`backend: ${probe.detail || `HTTP ${probe.status}`}`);
           }
-        } catch (fallbackErr) {
-          if (token !== this.loadToken) return;
-          try {
-            const deviceResolved = await resolveYoutubeOnDevice(track.youtubeId);
-            if (token !== this.loadToken) return;
-            streamUrl = deviceResolved.url;
-            streamHeaders = deviceResolved.headers;
-          } catch (deviceErr) {
-            const probeMsg =
-              fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-            const deviceMsg =
-              deviceErr instanceof Error ? deviceErr.message : String(deviceErr);
-            throw new Error(`${probeMsg}\n${deviceMsg}`);
-          }
+        } catch (probeErr) {
+          this.failedAttempts.push(
+            `backend: ${probeErr instanceof Error ? probeErr.message : String(probeErr)}`,
+          );
         }
       } else {
-        try {
-          const deviceResolved = await resolveYoutubeOnDevice(track.youtubeId);
-          if (token !== this.loadToken) return;
-          streamUrl = deviceResolved.url;
-          streamHeaders = deviceResolved.headers;
-        } catch (deviceErr) {
-          const backendMsg =
-            backendErr instanceof Error ? backendErr.message : String(backendErr);
-          const deviceMsg =
-            deviceErr instanceof Error ? deviceErr.message : String(deviceErr);
-          throw new Error(`${backendMsg}\n${deviceMsg}`);
-        }
+        this.failedAttempts.push(
+          `backend: ${backendErr instanceof Error ? backendErr.message : String(backendErr)}`,
+        );
       }
     }
 
-    // Abort if user already tapped another song while resolving
     if (token !== this.loadToken) return;
 
+    if (!initialCandidate) {
+      await this.loadDeviceCandidates(track.youtubeId, token);
+      if (token !== this.loadToken) return;
+      const next = this.fallbackCandidates.shift();
+      if (!next) {
+        throw new Error(this.failedAttempts.join(' | ') || 'No playable audio source found');
+      }
+      initialCandidate = next;
+    }
+
+    this.playCandidate(track, initialCandidate, token);
+  }
+
+  private async loadDeviceCandidates(videoId: string, token: number): Promise<void> {
+    if (this.deviceFallbackLoaded || Platform.OS === 'web') return;
+    this.deviceFallbackLoaded = true;
+    try {
+      const devices: DeviceResolvedStream[] = await resolveYoutubeOnDeviceCandidates(videoId, 4);
+      if (token !== this.loadToken) return;
+      for (const item of devices) {
+        this.fallbackCandidates.push({
+          url: item.url,
+          headers: item.headers,
+          label: item.resolver,
+          kind: 'device',
+        });
+      }
+    } catch (err) {
+      this.failedAttempts.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private playCandidate(track: Track, candidate: PlaybackCandidate, token: number): void {
+    this.clearStallTimer();
+    this.hasError = false;
+    this.lastLoaded = false;
+    this.shouldAutoPlay = true;
+    this.currentCandidateLabel = candidate.label;
+
+    this.startPlayer(track, candidate.url, candidate.headers, token);
+
+    // If the stream stalls in ExoPlayer buffering for 9s, automatically advance to the next fallback
+    if (Platform.OS !== 'web') {
+      this.stallFallbackTimer = setTimeout(() => {
+        if (
+          token !== this.loadToken ||
+          this.userPaused ||
+          this.lastLoaded ||
+          this.player?.playing
+        ) {
+          return;
+        }
+        void this.tryNextFallback(track, token, `${candidate.label}: buffering stalled`);
+      }, 9000);
+    }
+  }
+
+  private async tryNextFallback(track: Track, token: number, reason: string): Promise<boolean> {
+    if (token !== this.loadToken || this.userPaused) return false;
+    this.failedAttempts.push(reason);
+
+    if (this.fallbackCandidates.length === 0 && !this.deviceFallbackLoaded) {
+      this.onStageCb?.('Switching to direct phone stream...');
+      await this.loadDeviceCandidates(track.youtubeId, token);
+      if (token !== this.loadToken || this.userPaused) return false;
+    }
+
+    const nextCandidate = this.fallbackCandidates.shift();
+    if (!nextCandidate) {
+      return false;
+    }
+
+    this.onStageCb?.(`Retrying via ${nextCandidate.label}...`);
+    this.dispose();
+    this.playCandidate(track, nextCandidate, token);
+    return true;
+  }
+
+  private startPlayer(
+    track: Track,
+    streamUrl: string,
+    streamHeaders: Record<string, string> | undefined,
+    token: number,
+  ): void {
+    this.onStageCb?.('Buffering audio...');
     this.player = createAudioPlayer(
       {
         uri: streamUrl,
@@ -191,12 +298,40 @@ class AudioEngine {
       const error = status.error ? String(status.error) : null;
 
       if (error) {
+        this.clearStallTimer();
+        const activeTrack = this.activeTrack;
+        const activeToken = this.loadToken;
+        const failedLabel = this.currentCandidateLabel || 'stream';
+        if (activeTrack && !this.userPaused) {
+          void this.tryNextFallback(activeTrack, activeToken, `${failedLabel}: ${error}`).then(
+            (switched) => {
+              if (switched || activeToken !== this.loadToken) return;
+              this.hasError = true;
+              this.lastLoaded = false;
+              this.shouldAutoPlay = false;
+              this.onStageCb?.(null);
+              this.onStatusCb?.({
+                isPlaying: false,
+                isBuffering: false,
+                isLoaded: false,
+                positionSec: currentTime,
+                durationSec: duration,
+                didJustFinish: false,
+                error: this.failedAttempts.join(' | ') || error,
+              });
+            },
+          );
+          return;
+        }
         this.hasError = true;
         this.lastLoaded = false;
         this.shouldAutoPlay = false;
+        this.onStageCb?.(null);
       } else {
         if (status.isLoaded || status.playing) {
+          this.clearStallTimer();
           this.hasError = false;
+          this.onStageCb?.(null);
         }
         this.lastLoaded = Boolean(status.isLoaded);
 
@@ -292,6 +427,7 @@ class AudioEngine {
   }
 
   public dispose(): void {
+    this.clearStallTimer();
     this.subscription?.remove();
     this.subscription = null;
     if (this.player) {

@@ -36,6 +36,7 @@ export default function PlayerScreen() {
   const shuffle = usePlayerStore((s) => s.shuffle);
   const repeatMode = usePlayerStore((s) => s.repeatMode);
   const lastSponsorSkip = usePlayerStore((s) => s.lastSponsorSkip);
+  const bufferingStatus = usePlayerStore((s) => s.bufferingStatus);
   const error = usePlayerStore((s) => s.error);
 
   const togglePlayPause = usePlayerStore((s) => s.togglePlayPause);
@@ -128,7 +129,7 @@ export default function PlayerScreen() {
         <Image source={{ uri: currentTrack.artworkUrl }} style={styles.artwork} contentFit="cover" />
       </View>
 
-      {/* SponsorBlock / Error Toast */}
+      {/* SponsorBlock / Error / Buffering Toast */}
       {lastSponsorSkip ? (
         <View style={styles.toast}>
           <Ionicons name="shield-checkmark" size={14} color={colors.shieldActive} />
@@ -138,6 +139,11 @@ export default function PlayerScreen() {
         <View style={[styles.toast, { backgroundColor: 'rgba(226,33,52,0.22)' }]}>
           <Ionicons name="alert-circle" size={14} color={colors.danger} />
           <Text style={styles.toastText}>{error}</Text>
+        </View>
+      ) : isBuffering && bufferingStatus ? (
+        <View style={[styles.toast, { backgroundColor: 'rgba(255,255,255,0.08)' }]}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={styles.toastText}>{bufferingStatus}</Text>
         </View>
       ) : null}
 

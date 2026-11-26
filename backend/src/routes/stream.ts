@@ -179,6 +179,7 @@ router.get('/:videoId', async (req, res) => {
     );
     forwardHeader(res, 'Content-Range', upstream.headers['content-range']);
     res.setHeader('Cache-Control', 'public, max-age=1800');
+    res.flushHeaders();
 
     if (isHead) {
       res.end();

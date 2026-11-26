@@ -95,13 +95,13 @@ export const apiClient = {
   },
 
   resolveStream(youtubeId: string): Promise<ResolvedStreamInfo> {
-    return request(`/api/stream/${encodeURIComponent(youtubeId)}/resolve`, {}, 22000);
+    return request(`/api/stream/${encodeURIComponent(youtubeId)}/resolve`, {}, 14000);
   },
 
   async probeDirectStream(youtubeId: string): Promise<{ ok: boolean; status: number; detail?: string }> {
     const url = this.getStreamUrl(youtubeId);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
+    const timer = setTimeout(() => controller.abort(), 12000);
     try {
       const res = await fetch(url, {
         method: 'GET',

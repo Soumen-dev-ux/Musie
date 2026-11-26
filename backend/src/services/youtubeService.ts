@@ -401,7 +401,7 @@ class YouTubeService {
     try {
       const headers: Record<string, string> = {
         'User-Agent': stream.headers?.['User-Agent'] || DEFAULT_WEB_UA,
-        Range: 'bytes=0-1023',
+        Range: 'bytes=0-32767',
       };
       if (stream.headers?.Referer) {
         headers.Referer = stream.headers.Referer;
@@ -409,9 +409,13 @@ class YouTubeService {
       const probe = await axios.get(stream.url, {
         headers,
         responseType: 'arraybuffer',
-        timeout: 4000,
+        timeout: 4500,
         validateStatus: (s) => s >= 200 && s < 400,
       });
+      const contentType = String(probe.headers['content-type'] || '');
+      if (contentType.includes('text/html') || !(probe.data?.byteLength > 0)) {
+        return false;
+      }
       if (!stream.contentLength) {
         const contentRange = probe.headers['content-range'];
         if (typeof contentRange === 'string') {
@@ -419,6 +423,18 @@ class YouTubeService {
           if (totalMatch) {
             stream.contentLength = Number(totalMatch[1]);
           }
+        }
+      }
+      // Verify a second byte range when stream is larger than 64 KB to catch chunk-2 403s
+      if (probe.data.byteLength >= 32768) {
+        const probe2 = await axios.get(stream.url, {
+          headers: { ...headers, Range: 'bytes=65536-98303' },
+          responseType: 'arraybuffer',
+          timeout: 4500,
+          validateStatus: (s) => (s >= 200 && s < 400) || s === 416,
+        });
+        if (probe2.status !== 416 && !(probe2.data?.byteLength > 0)) {
+          return false;
         }
       }
       return true;
@@ -508,7 +524,7 @@ class YouTubeService {
     const target = `https://www.youtube.com/watch?v=${videoId}`;
     const args = [
       '-f',
-      'bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best',
+      'bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio',
       '--dump-single-json',
       '--no-playlist',
       '--no-warnings',
@@ -584,8 +600,8 @@ class YouTubeService {
             quality: 'best',
           });
 
-        if (!format) {
-          lastError = `${profile.client}: No audio format available`;
+        if (!format || format.is_type_otf) {
+          lastError = `${profile.client}: No progressive audio format available`;
           continue;
         }
 
@@ -599,7 +615,7 @@ class YouTubeService {
           decipheredUrl = format.url;
         }
 
-        if (!decipheredUrl) {
+        if (!decipheredUrl || decipheredUrl.includes('otf=1')) {
           lastError = `${profile.client}: Failed to decipher stream URL`;
           continue;
         }

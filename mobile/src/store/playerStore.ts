@@ -17,6 +17,7 @@ interface PlayerState {
   repeatMode: RepeatMode;
   sponsorSegments: SponsorSegment[];
   lastSponsorSkip: string | null;
+  bufferingStatus: string | null;
   error: string | null;
 
   initEngine: () => void;
@@ -57,6 +58,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   repeatMode: 'off',
   sponsorSegments: [],
   lastSponsorSkip: null,
+  bufferingStatus: null,
   error: null,
 
   initEngine: () => {
@@ -71,6 +73,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           set({
             isPlaying: false,
             isBuffering: false,
+            bufferingStatus: null,
             error: status.error,
           });
           return;
@@ -85,6 +88,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           isBuffering: status.isBuffering,
           positionSec: status.positionSec,
           durationSec: status.durationSec > 0 ? status.durationSec : trackDuration,
+          bufferingStatus: status.isPlaying || status.isLoaded ? null : get().bufferingStatus,
           error: status.isPlaying || status.isLoaded ? null : get().error,
         });
 
@@ -113,6 +117,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         setTimeout(() => {
           set({ lastSponsorSkip: null });
         }, 4000);
+      },
+      (stage) => {
+        set({ bufferingStatus: stage });
       },
     );
   },
@@ -148,6 +155,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       durationSec: track.duration || 0,
       isBuffering: true,
       sponsorSegments: [],
+      bufferingStatus: 'Resolving audio stream...',
       error: null,
     });
 
@@ -157,10 +165,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       if (state.currentTrack?.youtubeId === track.youtubeId && state.isBuffering && !state.isPlaying) {
         set({
           isBuffering: false,
+          bufferingStatus: null,
           error: 'Stream timed out while buffering. Check Backend Stream Test in Settings.',
         });
       }
-    }, 55000);
+    }, 45000);
 
     try {
       await audioEngine.loadAndPlay(track);
@@ -175,10 +184,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         if (state.currentTrack?.youtubeId === track.youtubeId && state.isBuffering && !state.isPlaying) {
           set({
             isBuffering: false,
+            bufferingStatus: null,
             error: 'Stream timed out while buffering. Tap retry to reload.',
           });
         }
-      }, 22000);
+      }, 24000);
       useLibraryStore.getState().recordRecent(track);
 
       // Load SponsorBlock segments in background
@@ -211,6 +221,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       set({
         isBuffering: false,
         isPlaying: false,
+        bufferingStatus: null,
         error: error instanceof Error ? error.message : 'Playback failed',
       });
     }

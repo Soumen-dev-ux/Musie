@@ -12,6 +12,7 @@ export function MiniPlayer() {
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const isBuffering = usePlayerStore((s) => s.isBuffering);
+  const bufferingStatus = usePlayerStore((s) => s.bufferingStatus);
   const error = usePlayerStore((s) => s.error);
   const positionSec = usePlayerStore((s) => s.positionSec);
   const durationSec = usePlayerStore((s) => s.durationSec);
@@ -39,7 +40,11 @@ export function MiniPlayer() {
             {currentTrack.title}
           </Text>
           <Text style={[styles.artist, error ? styles.errorText : null]} numberOfLines={1}>
-            {error ? `Tap play to retry · ${error}` : currentTrack.artist}
+            {error
+              ? `Tap play to retry · ${error}`
+              : isBuffering && bufferingStatus
+                ? bufferingStatus
+                : currentTrack.artist}
           </Text>
         </View>
 
