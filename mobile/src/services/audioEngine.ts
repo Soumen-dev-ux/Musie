@@ -58,6 +58,7 @@ class AudioEngine {
   private failedUrls = new Set<string>();
   private failedAttempts: string[] = [];
   private deviceFallbackLoaded = false;
+  private inFlightRetry: { token: number; promise: Promise<boolean> } | null = null;
   private sponsorSegments: SponsorSegment[] = [];
   private skippedSegmentIds = new Set<string>();
   private sponsorBlockEnabled = true;
@@ -173,6 +174,7 @@ class AudioEngine {
     this.failedUrls.clear();
     this.failedAttempts = [];
     this.deviceFallbackLoaded = Platform.OS === 'web';
+    this.inFlightRetry = null;
 
     // Dispose any existing player before resolving the next stream so stale audio stops immediately
     this.clearStallTimer();
@@ -277,6 +279,7 @@ class AudioEngine {
       };
 
       const startDevice = () => {
+        clearHeadStart();
         if (deviceStarted || settled || token !== this.loadToken) return;
         deviceStarted = true;
         resolveDevice().then(
@@ -352,41 +355,54 @@ class AudioEngine {
 
   private async tryNextFallback(track: Track, token: number, reason: string): Promise<boolean> {
     if (token !== this.loadToken || this.userPaused) return false;
-    this.failedAttempts.push(reason);
-    if (this.currentCandidateUrl) {
-      this.failedUrls.add(this.currentCandidateUrl);
-      this.invalidateCachedCandidate(track.youtubeId, this.currentCandidateUrl);
+    if (this.inFlightRetry && this.inFlightRetry.token === token) {
+      return this.inFlightRetry.promise;
     }
 
-    // If backend preflight is still in flight, wait for it before giving up
-    if (this.fallbackCandidates.length === 0 && this.pendingBackendPromise) {
-      const backendCandidate = await this.pendingBackendPromise;
-      this.pendingBackendPromise = null;
-      if (token !== this.loadToken || this.userPaused) return false;
-      if (
-        backendCandidate &&
-        !this.failedUrls.has(backendCandidate.url) &&
-        !this.fallbackCandidates.some((c) => c.url === backendCandidate.url)
-      ) {
-        this.fallbackCandidates.push(backendCandidate);
+    const retryPromise = (async (): Promise<boolean> => {
+      this.failedAttempts.push(reason);
+      if (this.currentCandidateUrl) {
+        this.failedUrls.add(this.currentCandidateUrl);
+        this.invalidateCachedCandidate(track.youtubeId, this.currentCandidateUrl);
       }
-    }
 
-    if (this.fallbackCandidates.length === 0 && !this.deviceFallbackLoaded) {
-      this.onStageCb?.('Switching to direct phone stream...');
-      await this.loadDeviceCandidates(track.youtubeId, token);
-      if (token !== this.loadToken || this.userPaused) return false;
-    }
+      // If backend preflight is still in flight, wait for it before giving up
+      if (this.fallbackCandidates.length === 0 && this.pendingBackendPromise) {
+        const backendCandidate = await this.pendingBackendPromise;
+        this.pendingBackendPromise = null;
+        if (token !== this.loadToken || this.userPaused) return false;
+        if (
+          backendCandidate &&
+          !this.failedUrls.has(backendCandidate.url) &&
+          !this.fallbackCandidates.some((c) => c.url === backendCandidate.url)
+        ) {
+          this.fallbackCandidates.push(backendCandidate);
+        }
+      }
 
-    const nextCandidate = this.fallbackCandidates.shift();
-    if (!nextCandidate) {
-      return false;
-    }
+      if (this.fallbackCandidates.length === 0 && !this.deviceFallbackLoaded) {
+        this.onStageCb?.('Switching to direct phone stream...');
+        await this.loadDeviceCandidates(track.youtubeId, token);
+        if (token !== this.loadToken || this.userPaused) return false;
+      }
 
-    this.onStageCb?.(`Retrying via ${nextCandidate.label}...`);
-    this.dispose();
-    this.playCandidate(track, nextCandidate, token);
-    return true;
+      const nextCandidate = this.fallbackCandidates.shift();
+      if (!nextCandidate) {
+        return false;
+      }
+
+      this.onStageCb?.(`Retrying via ${nextCandidate.label}...`);
+      this.dispose();
+      this.playCandidate(track, nextCandidate, token);
+      return true;
+    })().finally(() => {
+      if (this.inFlightRetry?.promise === retryPromise) {
+        this.inFlightRetry = null;
+      }
+    });
+
+    this.inFlightRetry = { token, promise: retryPromise };
+    return retryPromise;
   }
 
   private startPlayer(
@@ -436,6 +452,7 @@ class AudioEngine {
   private attachListener(player: AudioPlayer): void {
     this.subscription?.remove();
     this.subscription = player.addListener('playbackStatusUpdate', (status: AudioStatus) => {
+      if (player !== this.player) return;
       const currentTime = Number.isFinite(status.currentTime) ? status.currentTime : 0;
       const duration = Number.isFinite(status.duration) ? status.duration : 0;
       const error = status.error ? String(status.error) : null;

@@ -418,10 +418,12 @@ async function resolveProfileStream(
       .filter(isPlayableAudioFormat)
       .sort((a, b) => scoreAudioCandidate(b) - scoreAudioCandidate(a));
 
-    const muxedCandidates = muxed.filter(
-      (f) => Boolean(f.url) && f.type !== 'FORMAT_STREAM_TYPE_OTF' && !f.url?.includes('otf=1'),
-    );
-    const candidates = [...audioCandidates, ...muxedCandidates].slice(0, 2);
+    const muxedCandidates = muxed
+      .filter(
+        (f) => Boolean(f.url) && f.type !== 'FORMAT_STREAM_TYPE_OTF' && !f.url?.includes('otf=1'),
+      )
+      .sort((a, b) => (b.itag === 18 ? 1 : 0) - (a.itag === 18 ? 1 : 0));
+    const candidates = [...audioCandidates.slice(0, 2), ...muxedCandidates.slice(0, 1)];
 
     for (const candidate of candidates) {
       if (!candidate.url) continue;
