@@ -6,8 +6,18 @@ import { ApiKeysConfig } from '../types';
 const STORAGE_KEY = 'musie_api_keys_v1';
 
 export const DEFAULT_BACKEND_URL =
-  process.env.EXPO_PUBLIC_API_URL ||
-  (Platform.OS === 'android' ? 'http://10.0.2.2:4000' : 'http://localhost:4000');
+  process.env.EXPO_PUBLIC_API_URL || 'https://musie.onrender.com';
+
+export function normalizeBackendUrl(raw?: string): string {
+  const cleaned = (raw || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/api$/i, '');
+  if (!cleaned) return DEFAULT_BACKEND_URL;
+  if (/^https?:\/\//i.test(cleaned)) return cleaned;
+  const isLocalHost = /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(cleaned);
+  return `${isLocalHost ? 'http' : 'https'}://${cleaned}`;
+}
 
 export const EMPTY_KEYS: ApiKeysConfig = {
   backendUrl: DEFAULT_BACKEND_URL,
@@ -25,7 +35,7 @@ export async function loadSecureKeys(): Promise<ApiKeysConfig> {
     if (!raw) return { ...EMPTY_KEYS };
     const parsed = JSON.parse(raw) as Partial<ApiKeysConfig>;
     return {
-      backendUrl: parsed.backendUrl?.trim() || DEFAULT_BACKEND_URL,
+      backendUrl: normalizeBackendUrl(parsed.backendUrl),
       youtubeApiKey: parsed.youtubeApiKey || '',
       spotifyClientId: parsed.spotifyClientId || '',
       spotifyClientSecret: parsed.spotifyClientSecret || '',
@@ -37,7 +47,7 @@ export async function loadSecureKeys(): Promise<ApiKeysConfig> {
 
 export async function saveSecureKeys(keys: ApiKeysConfig): Promise<void> {
   const payload = JSON.stringify({
-    backendUrl: keys.backendUrl.trim().replace(/\/+$/, '') || DEFAULT_BACKEND_URL,
+    backendUrl: normalizeBackendUrl(keys.backendUrl),
     youtubeApiKey: keys.youtubeApiKey.trim(),
     spotifyClientId: keys.spotifyClientId.trim(),
     spotifyClientSecret: keys.spotifyClientSecret.trim(),

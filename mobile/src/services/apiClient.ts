@@ -8,6 +8,7 @@ import {
   Track,
 } from '../types';
 import { useSettingsStore } from '../store/settingsStore';
+import { normalizeBackendUrl } from './secureKeys';
 
 function getHeaders(): Record<string, string> {
   const { keys } = useSettingsStore.getState();
@@ -22,10 +23,7 @@ function getHeaders(): Record<string, string> {
 
 function getBaseUrl(): string {
   const { keys } = useSettingsStore.getState();
-  return keys.backendUrl
-    .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/api$/i, '');
+  return normalizeBackendUrl(keys.backendUrl);
 }
 
 export class ApiError extends Error {
@@ -139,7 +137,7 @@ export const apiClient = {
   },
 
   getHomeFeed(): Promise<{ sections: HomeSection[] }> {
-    return request('/api/youtube/home');
+    return request('/api/youtube/home', {}, 45000);
   },
 
   searchYouTube(

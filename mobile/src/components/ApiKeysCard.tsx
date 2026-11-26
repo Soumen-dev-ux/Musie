@@ -203,7 +203,7 @@ export function ApiKeysCard() {
           style={styles.input}
           value={backendUrl}
           onChangeText={setBackendUrl}
-          placeholder="http://192.168.1.50:4000"
+          placeholder="https://musie.onrender.com"
           placeholderTextColor={colors.textMuted}
           autoCapitalize="none"
           autoCorrect={false}

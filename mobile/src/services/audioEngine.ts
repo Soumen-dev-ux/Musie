@@ -192,7 +192,7 @@ class AudioEngine {
 
     const resolveBackend = async (): Promise<PlaybackCandidate> => {
       try {
-        const resolved = await apiClient.resolveStream(track.youtubeId, 7500);
+        const resolved = await apiClient.resolveStream(track.youtubeId, 15000);
         return {
           url: resolved.directUrl || apiClient.getStreamUrl(track.youtubeId),
           label: resolved.resolver || 'backend',
