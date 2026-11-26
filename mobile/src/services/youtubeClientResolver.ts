@@ -279,9 +279,33 @@ function scoreAudioCandidate(f: AdaptiveFormat): number {
 
 const DEVICE_CACHE_TTL_MS = 1000 * 60 * 15;
 const deviceStreamCache = new Map<string, { streams: DeviceResolvedStream[]; expiresAt: number }>();
+const inflightAllResolves = new Map<string, Promise<{ collected: DeviceResolvedStream[]; errors: string[] }>>();
 
-export function invalidateDeviceStreamCache(videoId: string): void {
-  deviceStreamCache.delete(videoId);
+export function invalidateDeviceStreamCache(videoId: string, failedUrl?: string): void {
+  if (!failedUrl) {
+    deviceStreamCache.delete(videoId);
+    return;
+  }
+  const entry = deviceStreamCache.get(videoId);
+  if (!entry) return;
+  const remaining = entry.streams.filter((s) => s.url !== failedUrl);
+  if (remaining.length === 0) {
+    deviceStreamCache.delete(videoId);
+  } else {
+    deviceStreamCache.set(videoId, { ...entry, streams: remaining });
+  }
+}
+
+function getProfilesForPlatform(): InnerTubeClientProfile[] {
+  if (Platform.OS === 'android') {
+    // Android ExoPlayer frequently rejects PO-token-gated iOS streams with "Source error".
+    // Prefer Android/VR/Embedded profiles on Android.
+    return [
+      ...CLIENT_PROFILES.filter((p) => p.name === 'ANDROID_VR'),
+      ...CLIENT_PROFILES.filter((p) => p.name !== 'ANDROID_VR' && p.name !== 'IOS'),
+    ];
+  }
+  return CLIENT_PROFILES;
 }
 
 function cacheDeviceStreams(videoId: string, streams: DeviceResolvedStream[]): void {
@@ -455,33 +479,48 @@ export async function resolveYoutubeOnDeviceCandidates(
     return cached.streams.slice(0, maxCandidates);
   }
 
+  const existingInflight = inflightAllResolves.get(videoId);
+  if (existingInflight) {
+    const { collected, errors } = await existingInflight;
+    if (collected.length > 0) {
+      return collected.slice(0, maxCandidates);
+    }
+    throw new Error(`On-device fallback failed (${errors.join(' | ')})`);
+  }
+
   const { config, rules } = useAdGuardStore.getState();
   const visitorData = await getVisitorDataFast();
+  const profiles = getProfilesForPlatform();
 
-  const profilePromises = CLIENT_PROFILES.map((profile) =>
+  const profilePromises = profiles.map((profile) =>
     resolveProfileStream(videoId, profile, visitorData, config, rules),
   );
 
   // Collect all resolved streams in the background to populate cache for instant fallbacks
-  const allCollectedPromise = Promise.allSettled(profilePromises).then((results) => {
-    const collected: DeviceResolvedStream[] = [];
-    const errors: string[] = [];
-    for (const r of results) {
-      if (r.status === 'fulfilled') {
-        collected.push(r.value);
-      } else {
-        errors.push(r.reason instanceof Error ? r.reason.message : String(r.reason));
+  const allCollectedPromise = Promise.allSettled(profilePromises)
+    .then((results) => {
+      const collected: DeviceResolvedStream[] = [];
+      const errors: string[] = [];
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          collected.push(r.value);
+        } else {
+          errors.push(r.reason instanceof Error ? r.reason.message : String(r.reason));
+        }
       }
-    }
-    if (collected.length > 0) {
-      cacheDeviceStreams(videoId, collected);
-    }
-    return { collected, errors };
-  });
+      if (collected.length > 0) {
+        cacheDeviceStreams(videoId, collected);
+      }
+      return { collected, errors };
+    })
+    .finally(() => {
+      inflightAllResolves.delete(videoId);
+    });
+
+  inflightAllResolves.set(videoId, allCollectedPromise);
 
   if (maxCandidates <= 1) {
     const first = await firstResolved(profilePromises);
-    cacheDeviceStreams(videoId, [first]);
     void allCollectedPromise;
     return [first];
   }

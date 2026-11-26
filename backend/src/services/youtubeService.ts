@@ -109,6 +109,8 @@ class YouTubeService {
 
   constructor() {
     this.initCookies();
+    // Pre-warm Innertube player session in background so first stream resolution is fast
+    this.getInnertube().catch(() => {});
   }
 
   private initCookies(): void {
@@ -469,26 +471,28 @@ class YouTubeService {
   private async resolveAudioStreamInternal(videoId: string): Promise<CachedStream> {
     const errors: string[] = [];
 
-    // Tier 1: yt-dlp (when running in Docker or host with yt-dlp installed)
+    // Race Tier 1 (yt-dlp) and Tier 2 (pure JS youtubei.js) concurrently so whichever
+    // resolves a verified readable stream first wins without waiting for the slower one.
     try {
-      const candidate = await this.resolveWithYtDlp(videoId);
-      if (await this.verifyStreamReadable(candidate)) {
-        return this.finalizeStream(videoId, candidate);
-      }
-      errors.push('yt-dlp: resolved URL returned 403/unreadable');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('ENOENT')) {
-        errors.push(`yt-dlp: ${msg}`);
-      }
-    }
-
-    // Tier 2: Pure JS youtubei.js across multiple client profiles
-    try {
-      const candidate = await this.resolveWithInnertube(videoId);
+      const candidate = await Promise.any([
+        this.resolveWithYtDlp(videoId).then(async (stream) => {
+          if (await this.verifyStreamReadable(stream)) return stream;
+          throw new Error('yt-dlp: resolved URL returned 403/unreadable');
+        }),
+        this.resolveWithInnertube(videoId),
+      ]);
       return this.finalizeStream(videoId, candidate);
-    } catch (err) {
-      errors.push(`innertube: ${err instanceof Error ? err.message : String(err)}`);
+    } catch (aggErr) {
+      if (aggErr instanceof AggregateError) {
+        for (const err of aggErr.errors) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes('ENOENT')) {
+            errors.push(msg);
+          }
+        }
+      } else {
+        errors.push(aggErr instanceof Error ? aggErr.message : String(aggErr));
+      }
     }
 
     // Tier 3: Piped proxy API fallback (helps when Render datacenter IP is flagged by YouTube)

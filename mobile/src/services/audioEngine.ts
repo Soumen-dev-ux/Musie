@@ -52,7 +52,10 @@ class AudioEngine {
   private loadToken = 0;
   private activeTrack: Track | null = null;
   private fallbackCandidates: PlaybackCandidate[] = [];
+  private pendingBackendPromise: Promise<PlaybackCandidate | null> | null = null;
   private currentCandidateLabel = '';
+  private currentCandidateUrl = '';
+  private failedUrls = new Set<string>();
   private failedAttempts: string[] = [];
   private deviceFallbackLoaded = false;
   private sponsorSegments: SponsorSegment[] = [];
@@ -90,13 +93,13 @@ class AudioEngine {
     });
   }
 
-  private invalidateCachedCandidate(videoId: string, label: string): void {
+  private invalidateCachedCandidate(videoId: string, url: string): void {
+    invalidateDeviceStreamCache(videoId, url);
     const existing = this.resolvedCache.get(videoId);
     if (!existing) return;
-    const remaining = existing.candidates.filter((c) => c.label !== label);
+    const remaining = existing.candidates.filter((c) => c.url !== url);
     if (remaining.length === 0) {
       this.resolvedCache.delete(videoId);
-      invalidateDeviceStreamCache(videoId);
     } else {
       this.resolvedCache.set(videoId, { ...existing, candidates: remaining });
     }
@@ -164,7 +167,10 @@ class AudioEngine {
     this.userPaused = false;
     this.activeTrack = track;
     this.fallbackCandidates = [];
+    this.pendingBackendPromise = null;
     this.currentCandidateLabel = '';
+    this.currentCandidateUrl = '';
+    this.failedUrls.clear();
     this.failedAttempts = [];
     this.deviceFallbackLoaded = Platform.OS === 'web';
 
@@ -216,8 +222,8 @@ class AudioEngine {
       return;
     }
 
-    // On native devices, race backend resolution and parallel on-device InnerTube resolution
-    // so whichever responds first begins playback immediately while the other becomes a hot backup.
+    // Start backend resolution immediately, and give it a brief head-start (1200ms)
+    // before racing on-device InnerTube resolution. If backend fails sooner, on-device starts at once.
     const resolveDevice = async (): Promise<PlaybackCandidate> => {
       const item = await resolveYoutubeOnDevice(track.youtubeId);
       return {
@@ -228,13 +234,30 @@ class AudioEngine {
       };
     };
 
+    const backendPromise = resolveBackend();
+    this.pendingBackendPromise = backendPromise.catch((err) => {
+      this.failedAttempts.push(err instanceof Error ? err.message : String(err));
+      return null;
+    });
+
     const initialCandidate = await new Promise<PlaybackCandidate>((resolve, reject) => {
       let settled = false;
+      let deviceStarted = false;
       let failures = 0;
       const errors: string[] = [];
+      let headStartTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearHeadStart = () => {
+        if (headStartTimer) {
+          clearTimeout(headStartTimer);
+          headStartTimer = null;
+        }
+      };
 
       const handleSuccess = (candidate: PlaybackCandidate) => {
+        clearHeadStart();
         if (token !== this.loadToken) return;
+        if (this.failedUrls.has(candidate.url)) return;
         this.cacheCandidate(track.youtubeId, candidate);
         if (!settled) {
           settled = true;
@@ -244,16 +267,33 @@ class AudioEngine {
         }
       };
 
-      const handleError = (err: unknown) => {
+      const handleError = (err: unknown, totalExpected: () => number) => {
         errors.push(err instanceof Error ? err.message : String(err));
         failures += 1;
-        if (!settled && failures === 2) {
+        if (!settled && failures >= totalExpected()) {
+          clearHeadStart();
           reject(new Error(errors.join(' | ') || 'No playable audio source found'));
         }
       };
 
-      resolveDevice().then(handleSuccess, handleError);
-      resolveBackend().then(handleSuccess, handleError);
+      const startDevice = () => {
+        if (deviceStarted || settled || token !== this.loadToken) return;
+        deviceStarted = true;
+        resolveDevice().then(
+          handleSuccess,
+          (err) => handleError(err, () => 2),
+        );
+      };
+
+      headStartTimer = setTimeout(startDevice, 1200);
+
+      backendPromise.then(
+        handleSuccess,
+        (err) => {
+          startDevice();
+          handleError(err, () => (deviceStarted ? 2 : 1));
+        },
+      );
     });
 
     if (token !== this.loadToken) return;
@@ -268,7 +308,7 @@ class AudioEngine {
       if (token !== this.loadToken) return;
       for (const item of devices) {
         if (
-          item.resolver !== this.currentCandidateLabel &&
+          !this.failedUrls.has(item.url) &&
           !this.fallbackCandidates.some((c) => c.url === item.url)
         ) {
           this.fallbackCandidates.push({
@@ -290,6 +330,7 @@ class AudioEngine {
     this.lastLoaded = false;
     this.shouldAutoPlay = true;
     this.currentCandidateLabel = candidate.label;
+    this.currentCandidateUrl = candidate.url;
 
     this.startPlayer(track, candidate.url, candidate.headers, token);
 
@@ -312,8 +353,23 @@ class AudioEngine {
   private async tryNextFallback(track: Track, token: number, reason: string): Promise<boolean> {
     if (token !== this.loadToken || this.userPaused) return false;
     this.failedAttempts.push(reason);
-    if (this.currentCandidateLabel) {
-      this.invalidateCachedCandidate(track.youtubeId, this.currentCandidateLabel);
+    if (this.currentCandidateUrl) {
+      this.failedUrls.add(this.currentCandidateUrl);
+      this.invalidateCachedCandidate(track.youtubeId, this.currentCandidateUrl);
+    }
+
+    // If backend preflight is still in flight, wait for it before giving up
+    if (this.fallbackCandidates.length === 0 && this.pendingBackendPromise) {
+      const backendCandidate = await this.pendingBackendPromise;
+      this.pendingBackendPromise = null;
+      if (token !== this.loadToken || this.userPaused) return false;
+      if (
+        backendCandidate &&
+        !this.failedUrls.has(backendCandidate.url) &&
+        !this.fallbackCandidates.some((c) => c.url === backendCandidate.url)
+      ) {
+        this.fallbackCandidates.push(backendCandidate);
+      }
     }
 
     if (this.fallbackCandidates.length === 0 && !this.deviceFallbackLoaded) {
