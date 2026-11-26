@@ -10,16 +10,8 @@ import { env } from '../config/env.js';
 import { Track } from '../types/index.js';
 import { adguardService } from './adguardService.js';
 
-// youtubei.js v16+ requires a user-supplied Platform.shim.eval (async, receives { output }),
-// while v13.x bundles Jinter synchronously. Configure eval safely for v16+ without breaking v13.
-const ytMajorVersion = Number(Platform.shim.info?.version?.split('.')[0] || '0');
-if (ytMajorVersion >= 16 || !Platform.shim.eval) {
-  (
-    Platform.shim as unknown as {
-      eval: (data: { output: string }, env?: Record<string, unknown>) => Promise<unknown>;
-    }
-  ).eval = async (data) => new Function(data.output)();
-}
+// youtubei.js v18+ delegates JS player deciphering to Platform.shim.eval
+Platform.shim.eval = async (data) => new Function(data.output)();
 
 const execFileAsync = promisify(execFile);
 
